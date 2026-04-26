@@ -5,8 +5,8 @@
     {"name": "16",  "heading": 160, "size": "large", "threshold_x": 0.0,  "threshold_y": 1.5},
     {"name": "28", "heading": 280, "size": "large", "threshold_x": 1.5, "threshold_y": 0.0}
   ],
-  "arrival_rate_per_min": 1.8,
-  "departure_rate_per_min": 1.0,
+  "arrival_rate_per_min": 1.1,
+  "departure_rate_per_min": 1.4,
   "wind_dir": 220,
   "wind_speed": 10,
   "emergencies_enabled": true,

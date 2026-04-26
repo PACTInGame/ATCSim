@@ -4,7 +4,7 @@
   "runways": [
     {"name": "35", "heading": 350, "size": "large", "threshold_x": 0.0, "threshold_y": -1.5}
   ],
-  "arrival_rate_per_min": 1.0,
+  "arrival_rate_per_min": 0.3,
   "departure_rate_per_min": 0.0,
   "wind_dir": 350,
   "wind_speed": 8,

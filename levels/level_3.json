@@ -4,8 +4,8 @@
   "runways": [
     {"name": "09", "heading": 90, "size": "medium", "threshold_x": -1.5, "threshold_y": 0.0}
   ],
-  "arrival_rate_per_min": 1.4,
-  "departure_rate_per_min": 0.8,
+  "arrival_rate_per_min": 0.5,
+  "departure_rate_per_min": 0.4,
   "wind_dir": 80,
   "wind_speed": 10,
   "emergencies_enabled": true,

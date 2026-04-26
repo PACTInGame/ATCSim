@@ -5,8 +5,8 @@
     {"name": "26L", "heading": 260, "size": "large", "threshold_x": 2.0, "threshold_y": 1.2},
     {"name": "26R", "heading": 260, "size": "large", "threshold_x": 2.0, "threshold_y": -1.2}
   ],
-  "arrival_rate_per_min": 1.6,
-  "departure_rate_per_min": 1.2,
+  "arrival_rate_per_min": 0.6,
+  "departure_rate_per_min": 0.6,
   "wind_dir": 260,
   "wind_speed": 14,
   "emergencies_enabled": true,
