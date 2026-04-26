@@ -1,0 +1,18 @@
+{
+  "level_id": 1,
+  "name": "BGO - Bergen, Norway",
+  "runways": [
+    {"name": "35", "heading": 350, "size": "large", "threshold_x": 0.0, "threshold_y": -1.5}
+  ],
+  "arrival_rate_per_min": 1.0,
+  "departure_rate_per_min": 0.0,
+  "wind_dir": 350,
+  "wind_speed": 8,
+  "emergencies_enabled": false,
+  "exits": [
+    {"name": "NORTH", "x": 0,   "y": 25},
+    {"name": "EAST",  "x": 45,  "y": 0},
+    {"name": "SOUTH", "x": 0,   "y": -25},
+    {"name": "WEST",  "x": -45, "y": 0}
+  ]
+}

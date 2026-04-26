@@ -1,0 +1,19 @@
+{
+  "level_id": 4,
+  "name": "MUC - Munich, Germany",
+  "runways": [
+    {"name": "26L", "heading": 260, "size": "large", "threshold_x": 2.0, "threshold_y": 1.2},
+    {"name": "26R", "heading": 260, "size": "large", "threshold_x": 2.0, "threshold_y": -1.2}
+  ],
+  "arrival_rate_per_min": 1.6,
+  "departure_rate_per_min": 1.2,
+  "wind_dir": 260,
+  "wind_speed": 14,
+  "emergencies_enabled": true,
+  "exits": [
+    {"name": "NORTH", "x": 0,   "y": 25},
+    {"name": "EAST",  "x": 45,  "y": 0},
+    {"name": "SOUTH", "x": 0,   "y": -25},
+    {"name": "WEST",  "x": -45, "y": 0}
+  ]
+}
