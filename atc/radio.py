@@ -105,6 +105,10 @@ class RadioManager:
     def rb_hold(callsign):
         return f"Holding over present position, {callsign}."
 
+    @staticmethod
+    def call_wind_request(callsign):
+        return f"{callsign}, request current wind information."
+
     # --------------------------------------------- emergency calls (aircraft)
     @staticmethod
     def call_minimum_fuel(callsign):

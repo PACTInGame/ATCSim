@@ -56,10 +56,17 @@ class RadarScreen:
     # ------------------------------------------------------------- dispatcher
     def render(self, surface, airport, aircraft_list, selected, weather_msg=None):
         self._draw_background(surface)
+
+        # Clip every layer drawn inside the radar viewport so aircraft
+        # spawned just outside the airspace don't leak into the side panels.
+        old_clip = surface.get_clip()
+        surface.set_clip(pygame.Rect(RADAR_X, RADAR_Y, RADAR_WIDTH, RADAR_HEIGHT))
         self._draw_grid(surface)
         self._draw_airport(surface, airport)
         for ac in aircraft_list:
             self._draw_aircraft(surface, ac, selected)
+        surface.set_clip(old_clip)
+
         self._draw_frame(surface)
         if weather_msg:
             self._draw_weather_warning(surface, weather_msg)
@@ -146,6 +153,11 @@ class RadarScreen:
         surface.blit(lbl, (sx + 8, sy - 6))
 
     # ------------------------------------------------------------- aircraft
+    AIRCRAFT_DOT_SIZE = 3        # half-width of the aircraft square
+    VECTOR_SECONDS = 30          # length of the heading line (seconds ahead)
+    SELECTION_RING_RADIUS = 11
+    WARNING_RING_RADIUS = 14
+
     def _draw_aircraft(self, surface, ac, selected):
         if ac.phase in (PHASE_LANDED,):
             return
@@ -165,16 +177,14 @@ class RadarScreen:
         else:
             color = ACCENT_BLUE
 
-        # Aircraft dot (square).
-        size = 5
-        rect = pygame.Rect(sx - size, sy - size, size * 2, size * 2)
-        pygame.draw.rect(surface, color, rect, 2)
+        # Aircraft dot (square outline).
+        s = self.AIRCRAFT_DOT_SIZE
+        rect = pygame.Rect(sx - s, sy - s, s * 2, s * 2)
+        pygame.draw.rect(surface, color, rect, 1)
 
-        # Direction vector (~1 minute projection at current speed).
+        # Direction vector (shorter than before).
         dx, dy = heading_to_vector(ac.radar_heading)
-        # Length: 60 sec * speed
-        seconds = 60
-        proj_km = ac.radar_speed * (1.852 / 3600.0) * seconds
+        proj_km = ac.radar_speed * (1.852 / 3600.0) * self.VECTOR_SECONDS
         ex_km = ac.radar_x + dx * proj_km
         ey_km = ac.radar_y + dy * proj_km
         ex, ey = world_to_screen(ex_km, ey_km)
@@ -186,19 +196,18 @@ class RadarScreen:
         # Selection ring.
         if ac is selected:
             pygame.draw.circle(surface, SELECTED_COLOR,
-                               (int(sx), int(sy)), 14, 1)
+                               (int(sx), int(sy)), self.SELECTION_RING_RADIUS, 1)
 
         # Warning ring (separation alert).
         if ac.warning:
             pygame.draw.circle(surface, DANGER_COLOR,
-                               (int(sx), int(sy)), 18, 1)
+                               (int(sx), int(sy)), self.WARNING_RING_RADIUS, 1)
 
     def _draw_datablock(self, surface, ac, sx, sy, color):
-        # Place datablock above-right of the aircraft.
-        ox = sx + 12
-        oy = sy - 28
-        f = self.fonts["small"]
-        cs = f.render(ac.callsign, True, color)
+        # Place datablock above-right of the aircraft (smaller than before).
+        ox = sx + 8
+        oy = sy - 22
+        cs = self.fonts["tiny"].render(ac.callsign, True, color)
         surface.blit(cs, (ox, oy))
 
         spd_str = f"{int(ac.radar_speed):03d}"
@@ -213,8 +222,8 @@ class RadarScreen:
         line3 = f"FL{alt_str} {arrow}"
         l2 = self.fonts["tiny"].render(line2, True, TEXT_DIM)
         l3 = self.fonts["tiny"].render(line3, True, TEXT_DIM)
-        surface.blit(l2, (ox, oy + 14))
-        surface.blit(l3, (ox, oy + 26))
+        surface.blit(l2, (ox, oy + 11))
+        surface.blit(l3, (ox, oy + 22))
 
     # -------------------------------------------------------------- weather
     def _draw_weather_warning(self, surface, msg):
@@ -228,7 +237,7 @@ class RadarScreen:
         surface.blit(text, rect)
 
     # -------------------------------------------------------- click handling
-    def aircraft_at_pixel(self, aircraft_list, mx, my, hit_radius=14):
+    def aircraft_at_pixel(self, aircraft_list, mx, my, hit_radius=12):
         """Return the aircraft (top-most) under the mouse, or None."""
         for ac in reversed(aircraft_list):
             if ac.phase == PHASE_LANDED:

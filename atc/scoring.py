@@ -4,6 +4,7 @@ import math
 from config import (
     SCORE_START, PENALTY_WARNING, PENALTY_GO_AROUND,
     PENALTY_MISSED_HANDOFF, PENALTY_FORGOT_FIRE_RESCUE,
+    PENALTY_NO_WIND_INFO,
     STARS_3_THRESHOLD, STARS_2_THRESHOLD, STARS_1_THRESHOLD,
     WARNING_HORIZ_KM, WARNING_VERT_FT,
     COLLISION_HORIZ_KM, COLLISION_VERT_FT,
@@ -16,6 +17,7 @@ class Scoring:
         self.warnings = 0
         self.go_arounds = 0
         self.missed_handoffs = 0
+        self.no_wind_landings = 0
         self.collision = False
         self.crashed = False
         self.forgot_fire_rescue = False
@@ -58,6 +60,10 @@ class Scoring:
         if not self.forgot_fire_rescue:
             self.forgot_fire_rescue = True
             self.score -= PENALTY_FORGOT_FIRE_RESCUE
+
+    def add_no_wind_landing(self):
+        self.no_wind_landings += 1
+        self.score -= PENALTY_NO_WIND_INFO
 
     # ------------------------------------------------------------- end state
     def stars(self):

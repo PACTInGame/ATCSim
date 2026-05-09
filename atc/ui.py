@@ -304,6 +304,11 @@ class UIController:
             surface.blit(big, (bar.x + 8, bar.y + 4))
 
     # ------------------------------------- command menu (selected aircraft)
+    LABEL_H = 14
+    BUTTON_H = 22
+    ROW_GAP = 6
+    ROW_H = LABEL_H + BUTTON_H + ROW_GAP   # 42 px per row
+
     def _draw_command_menu(self, surface, rect, game):
         title = self.fonts["medium"].render("COMMANDS", True, ACCENT_CYAN)
         surface.blit(title, (rect.x + 14, rect.y + 8))
@@ -320,86 +325,81 @@ class UIController:
             surface.blit(no, (rect.x + 14, rect.y + 50))
             return
 
-        # Header: callsign, type, phase
+        # Header: callsign, type, phase + current/target alt + speed.
         header = self.fonts["medium"].render(
             f"{ac.callsign}  {ac.type}  {ac.phase}",
             True, SELECTED_COLOR)
         surface.blit(header, (rect.x + 14, rect.y + 38))
         sub = self.fonts["tiny"].render(
-            f"ALT {int(ac.altitude):>5} ft  ->  {int(ac.target_altitude):>5} ft   "
+            f"ALT {int(ac.altitude):>5} ft  ->  {int(ac.target_altitude):>5} ft     "
             f"SPD {int(ac.speed):>3} kt  ->  {int(ac.target_speed):>3} kt",
             True, TEXT_DIM)
         surface.blit(sub, (rect.x + 14, rect.y + 60))
 
-        # ----- Build button rows -----
-        row_y = rect.y + 84
-        small_w = (rect.w - 28) // 9
+        # ----- Rows: label sits on top of its button strip -----
+        row_y = rect.y + 78
+        x0 = rect.x + 14
+        inner_w = rect.w - 28
+
         # Altitude row
-        self._row_label(surface, "ALT (ft)", rect.x + 14, row_y - 14)
         alts = [1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000]
+        small_w = inner_w // len(alts)
+        self._row_label(surface, "ALT (ft)", x0, row_y)
+        btn_y = row_y + self.LABEL_H
         for i, a in enumerate(alts):
-            r = pygame.Rect(rect.x + 14 + i * small_w, row_y,
-                            small_w - 4, 24)
+            r = pygame.Rect(x0 + i * small_w, btn_y, small_w - 4, self.BUTTON_H)
             self.buttons.append(Button(r, str(a), "altitude", a))
-        row_y += 36
+        row_y += self.ROW_H
 
         # Speed row
-        self._row_label(surface, "SPD (kt)", rect.x + 14, row_y - 14)
         spds = [140, 160, 180, 200, 220, 250, 280]
+        small_w = inner_w // len(spds)
+        self._row_label(surface, "SPD (kt)", x0, row_y)
+        btn_y = row_y + self.LABEL_H
         for i, s in enumerate(spds):
-            r = pygame.Rect(rect.x + 14 + i * small_w, row_y,
-                            small_w - 4, 24)
+            r = pygame.Rect(x0 + i * small_w, btn_y, small_w - 4, self.BUTTON_H)
             self.buttons.append(Button(r, str(s), "speed", s))
-        row_y += 36
+        row_y += self.ROW_H
 
-        # Cleared to land row (one button per active runway)
-        self._row_label(surface, "CLEAR TO LAND", rect.x + 14, row_y - 14)
+        # Cleared to land row
+        self._row_label(surface, "CLEAR TO LAND", x0, row_y)
+        btn_y = row_y + self.LABEL_H
         runways = game.airport.active_arrival_runways()
-        col_w = (rect.w - 28) // max(len(runways), 1)
+        col_w = inner_w // max(len(runways), 1)
         for i, r in enumerate(runways):
-            br = pygame.Rect(rect.x + 14 + i * col_w, row_y,
-                             col_w - 4, 28)
-            enabled = ac.is_arrival
+            br = pygame.Rect(x0 + i * col_w, btn_y, col_w - 4, self.BUTTON_H)
             self.buttons.append(Button(
                 br, f"RWY {r.name}", "clear_land", r,
-                color=SUCCESS_COLOR, enabled=enabled))
-        row_y += 40
+                color=SUCCESS_COLOR, enabled=ac.is_arrival))
+        row_y += self.ROW_H
 
-        # Hold / resume + Go-around + handoff row
-        wide_w = (rect.w - 28) // 4
-        self.buttons.append(Button(
-            (rect.x + 14, row_y, wide_w - 4, 28),
-            "HOLD", "hold", None, color=WARNING_COLOR,
-            enabled=ac.is_arrival and not ac.holding))
-        self.buttons.append(Button(
-            (rect.x + 14 + wide_w, row_y, wide_w - 4, 28),
-            "RESUME", "resume_hold", None,
-            enabled=ac.holding))
-        self.buttons.append(Button(
-            (rect.x + 14 + wide_w * 2, row_y, wide_w - 4, 28),
-            "GO AROUND", "go_around", None, color=DANGER_COLOR,
-            enabled=ac.phase == "APPROACH"))
-        # Handoff button (target depends on direction)
+        # Action row: HOLD, RESUME, GO AROUND, HANDOFF, WIND INFO
+        self._row_label(surface, "ACTIONS", x0, row_y)
+        btn_y = row_y + self.LABEL_H
+        wide_w = inner_w // 5
         if ac.is_arrival:
-            label = "HANDOFF TWR"
-            target = "tower"
+            handoff_label, handoff_target = "HANDOFF TWR", "tower"
         else:
-            label = "HANDOFF CTR"
-            target = "center"
-        self.buttons.append(Button(
-            (rect.x + 14 + wide_w * 3, row_y, wide_w - 4, 28),
-            label, "handoff", target, color=ACCENT_CYAN,
-            enabled=not ac.handed_off))
-        row_y += 40
-
-        # Wind info button
-        self.buttons.append(Button(
-            (rect.x + 14, row_y, wide_w * 2 - 4, 24),
-            "WIND INFO", "wind", None))
+            handoff_label, handoff_target = "HANDOFF CTR", "center"
+        actions = [
+            ("HOLD",      "hold",        None, WARNING_COLOR,
+             ac.is_arrival and not ac.holding),
+            ("RESUME",    "resume_hold", None, ACCENT_BLUE, ac.holding),
+            ("GO AROUND", "go_around",   None, DANGER_COLOR,
+             ac.phase == "APPROACH"),
+            (handoff_label, "handoff", handoff_target, ACCENT_CYAN,
+             not ac.handed_off),
+            ("WIND INFO", "wind",        None, ACCENT_BLUE, True),
+        ]
+        for i, (lbl, action, payload, color, enabled) in enumerate(actions):
+            br = pygame.Rect(x0 + i * wide_w, btn_y, wide_w - 4, self.BUTTON_H)
+            self.buttons.append(Button(br, lbl, action, payload,
+                                       color=color, enabled=enabled))
 
         mx, my = pygame.mouse.get_pos()
         for b in self.buttons:
-            b.draw(surface, self.fonts["small"], hovered=b.rect.collidepoint(mx, my))
+            b.draw(surface, self.fonts["small"],
+                   hovered=b.rect.collidepoint(mx, my))
 
     def _row_label(self, surface, text, x, y):
         s = self.fonts["tiny"].render(text, True, TEXT_VERY_DIM)

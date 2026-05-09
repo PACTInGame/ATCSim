@@ -42,9 +42,10 @@ class Aircraft:
     """A single airplane with autopilot-like behavior."""
 
     TURN_RATE_DEG_PER_S = 3.0          # standard rate turn
-    SPEED_ACCEL_KT_PER_S = 2.5
+    SPEED_ACCEL_KT_PER_S = 2.5          # cruise / approach acceleration
+    TAKEOFF_ACCEL_KT_PER_S = 6.0        # takeoff roll acceleration
+    LIFTOFF_OFFSET_KT = 20              # lift-off speed = min_speed + offset
     # Fuel only burns visibly once an aircraft has been declared an emergency.
-    # Outside emergencies aircraft are assumed to have plenty of reserves.
     EMERGENCY_BURN_PER_S = 1.0 / 12.0   # 1 fuel-minute per 12 real seconds
 
     def __init__(self, callsign, ac_type, x, y, altitude, heading, speed,
@@ -75,6 +76,9 @@ class Aircraft:
         self.cleared_to_land = False
         self.handed_off = False
         self.given_wind = False
+        self.wind_requested = False          # pilot has asked for wind
+        self.pending_wind_request = False    # request not yet transmitted
+        self.auto_go_around_pending = False  # auto missed-approach signal
 
         # Holding
         self.holding = False
@@ -162,12 +166,13 @@ class Aircraft:
     def _update_speed(self, dt):
         if self.speed == self.target_speed:
             return
+        accel = (self.TAKEOFF_ACCEL_KT_PER_S
+                 if self.phase == PHASE_TAKEOFF
+                 else self.SPEED_ACCEL_KT_PER_S)
         if self.target_speed > self.speed:
-            self.speed = min(self.speed + self.SPEED_ACCEL_KT_PER_S * dt,
-                             self.target_speed)
+            self.speed = min(self.speed + accel * dt, self.target_speed)
         else:
-            self.speed = max(self.speed - self.SPEED_ACCEL_KT_PER_S * dt,
-                             self.target_speed)
+            self.speed = max(self.speed - accel * dt, self.target_speed)
 
     def _update_position(self, dt):
         if self.phase in (PHASE_LANDED, PHASE_DESPAWNED):
@@ -218,20 +223,29 @@ class Aircraft:
         rwy = self.target_runway
         if rwy is None:
             return
-        # Aim for the runway threshold; descend on a 3 deg glideslope.
         tx, ty = rwy.threshold_x, rwy.threshold_y
-        self.target_heading = self._heading_toward(tx, ty)
-
         dist = self.distance_to(tx, ty)
-        # Glideslope: ~318 ft per km of distance (tan(3deg)*1km in ft).
-        glideslope_alt = max(0.0, dist * 318.0)
-        # The autopilot pushes the target altitude down toward the glideslope.
+
+        # If still too high near the threshold, automatically initiate a
+        # missed approach / go-around instead of overflying the airport.
+        if dist < 3.0 and self.altitude > 1000:
+            self._auto_go_around()
+            return
+
+        # Aim for the runway threshold; descend on a 3 deg glideslope.
+        self.target_heading = self._heading_toward(tx, ty)
+        glideslope_alt = max(0.0, dist * 318.0)  # ~318 ft per km
         self.target_altitude = min(self.target_altitude, glideslope_alt)
 
-        # Make sure we are slowing to approach speed.
+        # Slow toward approach speed.
         approach_spd = self.attrs["approach_speed"]
         if self.target_speed > approach_spd:
             self.target_speed = approach_spd
+
+        # Pilot calls for wind info if it hasn't been provided yet.
+        if (not self.given_wind and not self.wind_requested and dist < 12.0):
+            self.wind_requested = True
+            self.pending_wind_request = True
 
         # Touchdown if very close and low.
         if dist < 0.4 and self.altitude < 200:
@@ -239,19 +253,30 @@ class Aircraft:
             self.speed = max(self.speed - 30, 60)
             self.phase = PHASE_LANDED
 
+    def _auto_go_around(self):
+        """Aircraft initiates a missed approach. Manager will pick this up
+        via auto_go_around_pending and announce it on the radio."""
+        self.cleared_to_land = False
+        self.holding = False
+        self.phase = PHASE_INBOUND
+        self.target_altitude = max(self.altitude, 4000.0)
+        self.target_speed = max(self.target_speed, 200.0)
+        self.go_arounds += 1
+        self.auto_go_around_pending = True
+
     def _nav_takeoff(self, dt):
         rwy = self.target_runway
         if rwy is None:
             return
-        # Accelerate down the runway, lift off at min speed (rotation).
-        # Altitude stays at 0 until V1/Vr is reached.
-        self.target_speed = self.attrs["min_speed"] + 30
+        # Accelerate down the runway. Stay on the ground until V2.
+        v2 = self.attrs["min_speed"] + self.LIFTOFF_OFFSET_KT
+        self.target_speed = v2 + 10  # keep accelerating past V2
         self.target_heading = rwy.heading
         self.heading = rwy.heading
         self.target_altitude = 0.0
         self.altitude = 0.0
-        if self.speed >= self.attrs["min_speed"]:
-            self.target_altitude = 5000.0  # initial climb
+        if self.speed >= v2:
+            self.target_altitude = 5000.0  # initial climb-out
             self.phase = PHASE_DEPARTURE
 
     def _nav_departure(self):

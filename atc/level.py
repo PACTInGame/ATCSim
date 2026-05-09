@@ -95,15 +95,29 @@ class Spawner:
 
     JITTER_RATIO = 0.35       # +/- 35% jitter on inter-arrival time
     MIN_SPAWN_SEPARATION_KM = 8.0  # don't spawn near another aircraft
+    # Aircraft spawn this many km *outside* the visible radar so the player
+    # sees them flying in (clipped by the radar viewport rect).
+    SPAWN_OUTSIDE_KM = 4.0
+    # Lateral spread perpendicular to the IAF direction. Wider funnel means
+    # arrivals don't all line up at the same point on the boundary.
+    LATERAL_NOISE_KM = 18.0
 
     def __init__(self, level, airport, used_callsigns):
         self.level = level
         self.airport = airport
         self.used = used_callsigns
-        # next spawn times (real-time seconds since level start)
+        # next spawn times (real-time seconds since level start). The first
+        # spawn happens within seconds regardless of rate, so the radar isn't
+        # empty at the start.
         self.elapsed_sec = 0.0
-        self.next_arrival_sec = self._next_interval_sec(level.arrival_rate)
-        self.next_departure_sec = self._next_interval_sec(level.departure_rate)
+        if level.arrival_rate > 0:
+            self.next_arrival_sec = random.uniform(2.0, 6.0)
+        else:
+            self.next_arrival_sec = float("inf")
+        if level.departure_rate > 0:
+            self.next_departure_sec = random.uniform(8.0, 18.0)
+        else:
+            self.next_departure_sec = float("inf")
 
     @staticmethod
     def _next_interval_sec(rate_per_min):
@@ -184,32 +198,28 @@ class Spawner:
             target_runway=runway,
         )
 
-    @staticmethod
-    def _random_edge_point_near(ix, iy):
-        # Direction from origin toward IAF, scaled to be just inside the
-        # radar boundary on that side (with lateral noise).
+    @classmethod
+    def _random_edge_point_near(cls, ix, iy):
+        # Direction from origin toward IAF, projected to a position that
+        # sits *just outside* the visible radar so the aircraft visibly
+        # flies into the viewport.
         norm = math.hypot(ix, iy) or 1.0
         ux, uy = ix / norm, iy / norm
         perp_x, perp_y = -uy, ux
 
-        half_w = AIRSPACE_WIDTH_KM / 2 - 2.0
-        half_h = VISIBLE_HEIGHT_KM / 2 - 2.0
-        # Move along (ux, uy) until we hit a side of the rectangle.
-        if abs(ux) > 1e-6:
-            t_x = half_w / abs(ux)
-        else:
-            t_x = float("inf")
-        if abs(uy) > 1e-6:
-            t_y = half_h / abs(uy)
-        else:
-            t_y = float("inf")
+        half_w = AIRSPACE_WIDTH_KM / 2 + cls.SPAWN_OUTSIDE_KM
+        half_h = VISIBLE_HEIGHT_KM / 2 + cls.SPAWN_OUTSIDE_KM
+        # Move along (ux, uy) until we hit a side of the (extended) rectangle.
+        t_x = half_w / abs(ux) if abs(ux) > 1e-6 else float("inf")
+        t_y = half_h / abs(uy) if abs(uy) > 1e-6 else float("inf")
         edge_t = min(t_x, t_y)
         x = ux * edge_t
         y = uy * edge_t
-        # Lateral jitter along the edge.
-        lateral = random.uniform(-12.0, 12.0)
+        # Lateral jitter perpendicular to the IAF axis (wider funnel).
+        lateral = random.uniform(-cls.LATERAL_NOISE_KM, cls.LATERAL_NOISE_KM)
         x += perp_x * lateral
         y += perp_y * lateral
+        # Clamp so we never end up on the wrong side of the radar.
         x = max(-half_w, min(half_w, x))
         y = max(-half_h, min(half_h, y))
         return x, y

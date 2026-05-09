@@ -51,7 +51,16 @@ class GameManager:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption("ATC Simulator")
-        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        # Fullscreen with hardware scaling so the layout is rendered at the
+        # designed resolution and stretched to fit the user's display. The
+        # |SCALED flag preserves all coordinate math. Fall back to windowed
+        # mode if fullscreen isn't available (headless test environments).
+        try:
+            self.screen = pygame.display.set_mode(
+                (WINDOW_WIDTH, WINDOW_HEIGHT),
+                pygame.FULLSCREEN | pygame.SCALED)
+        except pygame.error:
+            self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.clock = pygame.time.Clock()
         self.fonts = make_fonts()
 
@@ -162,6 +171,18 @@ class GameManager:
 
     # ---------------------------------------------- aircraft state handling
     def _handle_aircraft_state_changes(self, ac):
+        # Auto go-around (initiated by the autopilot when too high to land).
+        if ac.auto_go_around_pending:
+            ac.auto_go_around_pending = False
+            self.scoring.add_go_around()
+            self.radio.transmit(ac.callsign, RadioManager.rb_go_around(ac.callsign))
+
+        # Pilot-initiated wind information request.
+        if ac.pending_wind_request:
+            ac.pending_wind_request = False
+            self.radio.transmit(ac.callsign,
+                                RadioManager.call_wind_request(ac.callsign))
+
         # Departures: as soon as runway is clear, give automatic takeoff
         # clearance and start the roll.
         if ac.phase == PHASE_TAKEOFF and not ac.takeoff_clearance:
@@ -185,7 +206,8 @@ class GameManager:
             if not ac.handed_off:
                 self.scoring.add_missed_handoff()
                 ac.handed_off = True  # avoid double-counting
-            # Stay on runway briefly then despawn.
+            if not ac.given_wind:
+                self.scoring.add_no_wind_landing()
             ac.phase = PHASE_DESPAWNED
             return
 
@@ -518,6 +540,8 @@ class GameManager:
             ws = self.airport.wind_speed
             rm.transmit("ATC", RadioManager.atc_wind(cs, wd, ws))
             rm.transmit(cs, RadioManager.rb_wind(cs))
+            ac.given_wind = True
+            ac.wind_requested = True
 
     # ----------------------------------------------------- readback errors
     def _maybe_misread_alt(self, wanted):
