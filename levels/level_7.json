@@ -9,12 +9,14 @@
   "departure_rate_per_min": 0.9,
   "wind_dir": 270,
   "wind_speed": 12,
+  "qnh": 1016,
   "emergencies_enabled": true,
   "weather_change": {
     "at_minute": 400,
     "activate_runways": ["27R"],
     "wind_dir": 300,
-    "wind_speed": 20
+    "wind_speed": 20,
+    "qnh": 1011
   },
   "exits": [
     {"name": "NORTH", "x": 0,   "y": 25},

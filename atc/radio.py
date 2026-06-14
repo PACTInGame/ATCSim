@@ -49,11 +49,21 @@ class RadioManager:
         return f"{callsign}, descend and maintain {altitude} feet."
 
     @staticmethod
-    def atc_speed(callsign, knots):
-        return f"{callsign}, keep speed not above {knots} knots."
+    def atc_speed(callsign, knots, current=None):
+        """Standard speed-control phraseology, picking the verb from the
+        relationship between the assigned speed and the current speed."""
+        if current is not None and knots < current - 1:
+            return f"{callsign}, reduce speed to {knots} knots."
+        if current is not None and knots > current + 1:
+            return f"{callsign}, increase speed to {knots} knots."
+        return f"{callsign}, maintain speed {knots} knots."
 
     @staticmethod
-    def atc_heading(callsign, heading):
+    def atc_heading(callsign, heading, turn=None):
+        """`turn` may be 'left'/'right' to give the turn direction, matching
+        real vectoring phraseology ('turn left heading 270')."""
+        if turn in ("left", "right"):
+            return f"{callsign}, turn {turn} heading {heading:03d}."
         return f"{callsign}, fly heading {heading:03d}."
 
     @staticmethod
@@ -61,7 +71,12 @@ class RadioManager:
         return f"{callsign}, resume own navigation."
 
     @staticmethod
-    def atc_clear_to_land(callsign, runway):
+    def atc_clear_to_land(callsign, runway, wind_dir=None, wind_speed=None):
+        """Landing clearance. A real tower issues the surface wind together
+        with the clearance, so wind is included when provided."""
+        if wind_dir is not None and wind_speed is not None:
+            return (f"{callsign}, runway {runway}, wind {wind_dir:03d} "
+                    f"at {wind_speed} knots, cleared to land.")
         return f"{callsign}, cleared to land runway {runway}."
 
     @staticmethod
@@ -91,10 +106,12 @@ class RadioManager:
 
     @staticmethod
     def rb_speed(callsign, knots):
-        return f"Speed not above {knots} knots, {callsign}."
+        return f"Speed {knots} knots, {callsign}."
 
     @staticmethod
-    def rb_heading(callsign, heading):
+    def rb_heading(callsign, heading, turn=None):
+        if turn in ("left", "right"):
+            return f"Turn {turn} heading {heading:03d}, {callsign}."
         return f"Heading {heading:03d}, {callsign}."
 
     @staticmethod

@@ -205,12 +205,6 @@ class RadarScreen:
                                (int(sx), int(sy)), self.WARNING_RING_RADIUS, 1)
 
     def _draw_datablock(self, surface, ac, sx, sy, color):
-        # Place datablock above-right of the aircraft (smaller than before).
-        ox = sx + 8
-        oy = sy - 22
-        cs = self.fonts["tiny"].render(ac.callsign, True, color)
-        surface.blit(cs, (ox, oy))
-
         spd_str = f"{int(ac.radar_speed):03d}"
         alt_str = f"{int(ac.radar_altitude // 100):03d}"
         if ac.target_altitude > ac.altitude + 20:
@@ -219,12 +213,26 @@ class RadarScreen:
             arrow = "v"
         else:
             arrow = "-"
+        line1 = ac.callsign
         line2 = f"{ac.type} {spd_str}"
         line3 = f"FL{alt_str} {arrow}"
+
+        l1 = self.fonts["tiny"].render(line1, True, color)
         l2 = self.fonts["tiny"].render(line2, True, TEXT_DIM)
         l3 = self.fonts["tiny"].render(line3, True, TEXT_DIM)
-        surface.blit(l2, (ox, oy + 11))
-        surface.blit(l3, (ox, oy + 22))
+
+        # Place the datablock on the side away from the field center so blips
+        # clustered near the airport spread their labels outward instead of
+        # all stacking up-and-to-the-right of each other.
+        ccx = RADAR_X + RADAR_WIDTH / 2.0
+        ccy = RADAR_Y + RADAR_HEIGHT / 2.0
+        right = sx <= ccx
+        below = sy <= ccy
+        block_w = max(l1.get_width(), l2.get_width(), l3.get_width())
+        ox = sx + 8 if right else sx - 8 - block_w
+        oy = sy + 8 if below else sy - 33
+        for i, surf in enumerate((l1, l2, l3)):
+            surface.blit(surf, (ox, oy + i * 11))
 
     # -------------------------------------------------------------- weather
     def _draw_weather_warning(self, surface, msg):

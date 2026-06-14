@@ -40,7 +40,7 @@ minutes — keep this distinction in mind (see §6).
 
 | File | Responsibility |
 |------|----------------|
-| `config.py` | All global constants: window/panel layout, airspace size, px/km scale, time model, colors, aircraft type table, airline prefixes, separation thresholds, frequencies, scoring penalties/thresholds, file paths. |
+| `config.py` | All global constants: window/panel layout, airspace size, px/km scale, time model, colors, aircraft type table, airline prefixes, separation thresholds, frequencies, scoring penalties/thresholds (incl. `SCORE_FLOOR`), atmosphere/realism constants (`TRANSITION_ALTITUDE_FT`, `SPEED_LIMIT_BELOW_FL100`, `SPEED_LIMIT_ALT_FT`, `DEFAULT_QNH`), file paths. |
 | `atc/manager.py` | `GameManager`: main loop, state machine, update orchestration, rendering of menu + level-end overlay, input dispatch, command dispatch, level lifecycle, emergencies/weather orchestration, runway-clearance & holding-stack logic. |
 | `atc/aircraft.py` | `Aircraft`: physical state + autopilot navigation per phase, fuel/emergencies, and the `cmd_*` methods that player commands call. Phase constants. |
 | `atc/airport.py` | `Airport`, `Runway`: geometry (IAF/FAF/threshold, runway strip segments, crossing-point computation), wind, exit waypoints. `heading_to_vector`, `segment_intersection`. |
@@ -73,6 +73,10 @@ minutes — keep this distinction in mind (see §6).
 ## 5. State machine
 
 `GameManager.state` ∈ `{MENU, PLAYING, LEVEL_END}`.
+
+A separate `show_help` flag overlays the help/quick-reference screen
+(`_render_help_overlay`) on top of any state; it is toggled by H/F1 and closed
+by ESC, and is independent of `state`.
 
 - **MENU** — `_render_menu` draws the level grid (2 columns). `_click_menu`
   starts an unlocked level. Long level names are clipped so they can't overlap
@@ -120,17 +124,23 @@ Order matters; several bugs historically came from reordering. Current order:
 4. Filter `aircraft_list` to active aircraft; clear a stale `selected_aircraft`.
 5. Radar sweep (`snapshot_radar`) every `RADAR_REFRESH_SEC` — freezes the
    displayed position/datablock values so blips update in discrete sweeps.
-6. `check_separation` (airborne) + `check_runway_conflicts` (ground/crossing).
-   Either returning a collision ends the level.
+6. `check_separation` (airborne) + `check_runway_conflicts` (ground/crossing),
+   each returning `(collision, seen_pairs)`; the manager reconciles stale
+   warning pairs once against the union (`Scoring.reconcile_warnings`). Either
+   collision ends the level.
 7. `_update_holding_stacks` (assign hold altitudes), `Spawner.update`,
    `RadioManager.update`, emergency announcements/triggers, weather change.
 
 `_handle_aircraft_state_changes` is where most cross-cutting per-aircraft glue
 lives: announcing auto go-arounds and pilot wind requests; auto-granting takeoff
 clearance when the runway is clear; freeing the runway as a departure climbs
-out; scoring missed handoffs / no-wind landings when an arrival lands; scoring a
-missed handoff when a departure leaves radar uncontacted; despawning landed
-aircraft and departed aircraft.
+out; scoring missed handoffs / no-wind landings and counting the landing when an
+arrival touches down; counting the departure (and a missed handoff if
+uncontacted) when a departure reaches its **exit boundary fix** (`dist<2.5 km`)
+or otherwise leaves radar; despawning landed and departed aircraft. **Note:**
+departures despawn on reaching the exit fix — the fixes sit just inside the
+radar edge, so without this they would home onto the fix and orbit it forever,
+never completing.
 
 ---
 
@@ -149,8 +159,23 @@ while phase stays `INBOUND`.
 (`_update_heading/_altitude/_speed` at standard turn rate / climb / accel).
 `snapshot_radar` copies state into `radar_*` fields once per sweep for display.
 
+Each aircraft also carries a transponder `squawk` (`_random_squawk`, octal
+digits, never a reserved code), forced to `7700` on any emergency.
+
+### Speed limit below 10,000 ft
+`_update_speed` slews toward `_effective_target_speed()`, which caps the
+commanded `target_speed` to `SPEED_LIMIT_BELOW_FL100` (250 kt) while below
+`SPEED_LIMIT_ALT_FT` and en route/approach/departure (not while holding). The
+stored `target_speed` is untouched, so the cap lifts automatically on climb-out
+through 10,000 ft. This models the standard regulatory speed limit.
+
 ### Navigation (`_update_navigation`)
-- If `holding`: orbit (continuous +30° turn).
+- If `holding`: fly a standard **right-hand racetrack** (`_nav_hold`) — a small
+  state machine (`turn_out`→`outbound`→`turn_in`→`inbound`) anchored at
+  `hold_anchor` (captured where holding began), with `HOLD_LEG_SECONDS` straight
+  legs joined by forced right turns. `_reset_hold` clears the pattern when
+  holding ends (auto-cleared at the top of `update` once `holding` is False).
+  This replaced the old continuous-circle hold.
 - Else if `assigned_heading is not None` and phase is INBOUND/DEPARTURE: fly the
   assigned vector (player control).
 - Else per-phase auto-nav:
@@ -160,9 +185,13 @@ while phase stays `INBOUND`.
     and set `holding` on arrival.
   - `_nav_approach`: aim at the threshold, descend on a ~3° glideslope
     (`~318 ft/km`), slow to approach speed; if still too high near the threshold
-    (`dist<3 km, alt>1000 ft`) trigger an **auto go-around**; touch down at
-    `dist<0.4 km, alt<200 ft` → `LANDED`. Pilots request wind inside 12 km if it
-    wasn't given.
+    (`dist<3 km, alt>1000 ft`) **and** `go_around_cooldown<=0` trigger an **auto
+    go-around** (the cooldown, set to 15 s on any go-around, stops a premature
+    re-clearance from thrashing); touch down at `dist<0.4 km, alt<200 ft` →
+    `LANDED`. Pilots request wind inside 12 km if it wasn't given. **Practical
+    consequence:** an arrival must be descended toward platform altitude
+    (≈3000–4000 ft) before being cleared — clearing from high/far cannot lose
+    enough height on the direct path and ends in a go-around, as in reality.
   - `_nav_takeoff`: hold position (`target_speed=0`) until `takeoff_clearance`,
     then accelerate to V2 and rotate into `DEPARTURE`. **Gating the roll on
     clearance is what serializes crossing-runway departures.**
@@ -182,8 +211,12 @@ Fuel only burns once an aircraft is a fuel emergency (`EMERGENCY_BURN_PER_S`).
 `emergency="crashed"` **without** despawning (the manager detects it). Reserve is
 tuned so a prioritized direct approach from anywhere an emergency may trigger
 (see below) can land, but an ignored emergency still crashes within the level.
-`trigger_engine_failure` does not burn fuel (no crash) — it's a workload/
-fire-rescue event the aircraft can still land normally.
+`trigger_engine_failure` now sets a finite reserve (45 fuel-min) **and**
+disables climb (`_update_altitude` refuses to climb when
+`emergency=="engine_failure"`), so the aircraft must be given a priority
+descent/approach and landed before the timer expires, with Fire & Rescue
+alerted — otherwise it crashes like a fuel emergency. Both emergencies set
+`squawk=7700`.
 
 Emergencies are triggered randomly by `GameManager._maybe_trigger_emergency`
 **only** on arrivals that are within 35 km of their runway and below 11000 ft
@@ -218,16 +251,19 @@ a point. Exit waypoints default to four cardinal edge fixes.
   "arrival_rate_per_min": 0.8,
   "departure_rate_per_min": 0.7,
   "wind_dir": 270, "wind_speed": 14,
+  "qnh": 1012,                        // optional, defaults to DEFAULT_QNH (1013)
   "emergencies_enabled": true,
   "weather_change": {                 // optional
     "at_minute": 400,                 // in-game minutes after level start
     "activate_runways": ["27R"],
-    "wind_dir": 300, "wind_speed": 20
+    "wind_dir": 300, "wind_speed": 20,
+    "qnh": 1011                       // optional new QNH; advances the ATIS letter
   },
   "exits": [ {"name": "NORTH", "x": 0, "y": 25}, ... ]
 }
 ```
-`load_level` tolerates a missing `exits` (falls back to cardinal defaults).
+`load_level` tolerates a missing `exits` (falls back to cardinal defaults) and a
+missing `qnh` (falls back to `DEFAULT_QNH`).
 `list_levels` loads `levels/*.json`, **silently skipping malformed files**, and
 sorts by `level_id` — so a JSON error makes a level vanish from the menu rather
 than crash. Levels 1–8 ship; `runway.size == "small"` forces small aircraft
@@ -247,7 +283,12 @@ existing traffic. Departures spawn at a free runway threshold in `TAKEOFF`.
 Considers aircraft above 200 ft. Warning at `<WARNING_HORIZ_KM` &
 `<WARNING_VERT_FT`; collision at `<COLLISION_HORIZ_KM` & `<COLLISION_VERT_FT`.
 Warning pairs are de-duplicated (`Scoring._warning_pairs`) so a sustained
-conflict is penalized once, and cleared when the pair separates.
+conflict is penalized once. **Both** `check_separation` and
+`check_runway_conflicts` now *return* `(collision, seen_pairs)`; the manager
+unions the two seen-sets and calls `Scoring.reconcile_warnings(union)` **once**
+per frame to clear stale pairs. This fixed a bug where the airborne check
+(which ignores aircraft ≤200 ft) force-cleared a low crossing-runway warning
+every frame, letting `check_runway_conflicts` re-charge it unboundedly.
 
 ### Runway / crossing conflicts (`check_runway_conflicts`)
 Covers what airborne separation can't: aircraft **at/below 300 ft** that are
@@ -269,9 +310,15 @@ block, so two departures on crossing runways don't deadlock — the first to be
 evaluated rolls, then blocks the other until it climbs out.
 
 ### Scoring (`Scoring`)
-Start 100. Penalties: warning −2, go-around −5, missed handoff −10, forgot
-fire&rescue −15, no-wind landing −3. Collision/crash zero the score and the
-level fails (0 stars). Stars: ≥90→3, ≥70→2, ≥40→1, else 0.
+Start 100. Penalties go through `_deduct(points)`, which clamps at
+`SCORE_FLOOR` (0) so the score never goes negative. Penalties: warning −2,
+go-around −5, missed handoff −10, forgot fire&rescue −15, no-wind landing −3
+(a normal landing clearance includes the wind, so this only triggers on an
+unusual path). Collision/crash zero the score and the level fails (0 stars).
+Stars: ≥90→3, ≥70→2, ≥40→1, else 0. Throughput counters `landings` /
+`departures` (via `add_landing` / `add_departure`) are informational —
+displayed in the left panel and end screen, they do not affect stars (so the
+eight shipped levels need no rebalancing).
 
 ### Holding stacks (`_update_holding_stacks`)
 When an aircraft starts holding it is assigned the lowest free altitude from
@@ -288,6 +335,21 @@ commands push an ATC call and the aircraft readback. All phraseology lives as
 `@staticmethod` generators (`atc_*` for controller calls, `rb_*` for readbacks,
 `call_*` for pilot-initiated calls). Add new phraseology here, not inline.
 
+Phraseology is standardized for realism:
+- `atc_speed(cs, kt, current)` picks the verb — "reduce/increase speed to" or
+  "maintain speed" — from the relationship to the current speed (manager passes
+  `int(ac.speed)`).
+- `atc_heading(cs, hdg, turn)` / `rb_heading` include the turn direction
+  ("turn left/right heading 270"); the manager derives `turn` from
+  `angle_diff(hdg, ac.heading)`.
+- `atc_clear_to_land(cs, rwy, wind_dir, wind_speed)` issues the surface wind
+  **with** the landing clearance (real tower behavior); the `clear_land`
+  command therefore sets `given_wind=True` automatically. The standalone WIND
+  INFO action remains for explicit pilot requests.
+- ATIS strings (built in `manager.start_level` / `_maybe_change_weather`)
+  include the information letter (`Airport.atis_phonetic()`) and QNH; a weather
+  change calls `Airport.advance_atis()` to publish the next letter.
+
 ---
 
 ## 12. Rendering & UI
@@ -299,27 +361,67 @@ Each aircraft: a square blip colored by state (danger = mayday/engine/crash/
 warning; amber = min-fuel/holding-ish; yellow = selected; green = handed off;
 blue = normal), a heading/speed vector line, a 3-line datablock (callsign /
 type+speed / flight level + climb arrow), plus selection and separation rings.
+The datablock is placed on the side **away from the field center** (quadrant
+based on the blip's position relative to the radar center) so blips clustered
+near the airport spread their labels outward instead of all stacking up-right.
 Labels for parallel runways/IAFs are staggered by index so they don't overprint.
 `aircraft_at_pixel` does click hit-testing (skips landed/despawned).
 
 ### Panels (`atc/ui.py`), layout from `config.py`
-- **Left** — airport info: local time, airport, active runways, wind,
-  frequencies, score, stat counters, and the ALERT FIRE & RESCUE button.
+- **Left** — airport info: local time, airport, active runways, wind, QNH +
+  ATIS information letter, frequencies, score, throughput + penalty stat
+  counters (Arrivals/Departures/Warnings/Go-Arounds/Missed Handoffs), and the
+  ALERT FIRE & RESCUE button.
 - **Right** — traffic list rows (callsign/type/phase/alt/spd), excluding
   handed-off aircraft; selectable; colored by emergency/holding.
 - **Bottom** — split into COMMS (radio log + current-transmission bar) and the
-  COMMANDS menu for the selected aircraft: rows for ALT, SPD, HEADING (relative
-  turns + cardinals + OWN NAV), CLEAR TO LAND (per active runway), and ACTIONS
-  (HOLD / RESUME / GO AROUND / HANDOFF / WIND INFO). Buttons enable/disable by
-  context. `BOTTOM_PANEL_HEIGHT` is sized to fit all five rows; if you add a
-  row, grow the panel and re-verify no overlap.
+  COMMANDS menu for the selected aircraft (header shows callsign/type/phase +
+  `SQ<squawk>`): rows for ALT, SPD, HEADING (relative turns + cardinals + OWN
+  NAV), CLEAR TO LAND (per active runway), and ACTIONS (HOLD / RESUME / GO
+  AROUND / HANDOFF / WIND INFO). Buttons enable/disable by context.
+  `BOTTOM_PANEL_HEIGHT` is sized to fit all five rows (last buttons end ~882 px
+  of 900); if you add a row, grow the panel and re-verify no overlap.
 
 ### Input
 `GameManager.run` dispatches: left-click → `_handle_click` (menu/UI/radar
 selection/commands via `UIController.handle_click`); right-click on the radar →
 `_handle_right_click` (vector the selected en-route aircraft toward the point);
-SPACE → pause; ESC → back/quit. `UIController` rebuilds its button list every
-frame and exposes `handle_click` returning an action dict the manager acts on.
+SPACE → pause; ESC → back/quit (or close help); **H / F1 → toggle the help
+overlay** (`_render_help_overlay`, which swallows other input while open).
+Other keys go to `_handle_keydown_playing`, the **keyboard shortcuts** for the
+selected aircraft: arrows = altitude ±1000 / heading ±10, `[` `]` (or `-` `=`)
+= speed ∓10, `L` clear to land, `O`/`N` hold/resume, `G` go around, `T`
+handoff, `W` wind, `F` fire & rescue — all routed through `_handle_command` so
+the radio call + readback still fire. `UIController` rebuilds its button list
+every frame and exposes `handle_click` returning an action dict.
+
+---
+
+## 12b. Realism model (what's modeled, and the deliberate simplifications)
+
+The guiding rule is "as realistic as practical while staying playable." What is
+modeled realistically:
+- **Phraseology**: standard ATC verbs (climb/descend and maintain, reduce/
+  increase speed to / maintain, turn left/right heading), readbacks, ATIS with
+  information letter + QNH, landing clearance carrying the surface wind, mayday/
+  minimum-fuel calls, squawk codes (7700 on emergency, reserved codes avoided).
+- **Procedures**: descend-then-clear approach flow (a too-high clearance forces
+  a go-around / missed approach), ~3° glideslope, right-hand racetrack holding
+  with vertical stacking, departures held short until the runway/crossing is
+  clear, exit (boundary) fixes for handoff to Center, the 250 kt-below-10,000 ft
+  speed limit, separation standards (5 km/1000 ft warning, 1 km/300 ft loss).
+- **Aircraft performance**: per-type speeds, climb/descent rates, approach
+  speeds, wake categories; standard-rate turns; engine failure degrading climb.
+
+Deliberate simplifications for gameplay (don't "fix" these as bugs):
+- Time is accelerated for atmosphere while physics run in real seconds (§6).
+- Fuel only burns during an emergency; an emergency reserve is a countdown to a
+  crash rather than a full fuel-flow model.
+- Distances/altitudes are scaled to fit a 100 km viewport; the glideslope and
+  holding-leg constants are tuned to the viewport, not to real ft/NM.
+- One voice channel, instantaneous autopilot response to a command, no wind
+  effect on the ground track, no SIDs/STARs as published routes (exit fixes and
+  IAFs stand in), no ground/taxi phase.
 
 ---
 
@@ -339,7 +441,15 @@ unreachable. The file is gitignored.
 - The crash check must stay **before** the active-filter in `_update_playing`;
   crashed aircraft intentionally live one extra frame.
 - Holding is a flag (`self.holding`), not a phase. Don't reintroduce a
-  `HOLDING` phase without updating `is_arrival` and all callers.
+  `HOLDING` phase without updating `is_arrival` and all callers. The racetrack
+  pattern state (`hold_anchor/hold_state/hold_inbound_hdg/hold_leg_timer`) is
+  reset by `_reset_hold` whenever holding ends — keep that reset in place.
+- Warning de-dup spans two checks: never re-add the stale-pair clearing inside
+  `check_separation`. Both checks return their seen pairs; reconcile once in the
+  manager (regressing this re-introduces the unbounded crossing-warning bug).
+- Keep aircraft physics realistic but bounded by the level length: speed cap
+  below 10k ft, no-climb on engine failure, and the go-around cooldown all live
+  in `Aircraft`; tune their constants there.
 - Add radio wording in `radio.py`; add commands as `cmd_*` on `Aircraft` plus a
   branch in `_handle_command` plus (optionally) a UI button.
 - New levels: sequential `level_id`, valid JSON (malformed = silently skipped),

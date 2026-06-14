@@ -6,6 +6,7 @@ import random
 
 from config import (
     LEVELS_DIR, AIRCRAFT_TYPES, AIRSPACE_WIDTH_KM, VISIBLE_HEIGHT_KM,
+    DEFAULT_QNH,
 )
 from atc.airport import Airport, Runway, heading_to_vector
 from atc.aircraft import (
@@ -19,7 +20,7 @@ from atc.aircraft import (
 class LevelData:
     def __init__(self, level_id, name, runways, arrival_rate, departure_rate,
                  emergencies_enabled, weather_change=None,
-                 wind_dir=270, wind_speed=10, exits=None):
+                 wind_dir=270, wind_speed=10, exits=None, qnh=DEFAULT_QNH):
         self.level_id = level_id
         self.name = name
         self.runways = runways
@@ -30,6 +31,7 @@ class LevelData:
         self.wind_dir = wind_dir
         self.wind_speed = wind_speed
         self.exits = exits
+        self.qnh = qnh
 
     def build_airport(self):
         runways = []
@@ -47,6 +49,7 @@ class LevelData:
             exit_waypoints=self.exits,
             wind_dir=self.wind_dir,
             wind_speed=self.wind_speed,
+            qnh=self.qnh,
         )
 
 
@@ -64,6 +67,7 @@ def load_level(path):
         wind_dir=data.get("wind_dir", 270),
         wind_speed=data.get("wind_speed", 10),
         exits=[(e["name"], e["x"], e["y"]) for e in data["exits"]] if "exits" in data else None,
+        qnh=data.get("qnh", DEFAULT_QNH),
     )
 
 
@@ -170,8 +174,8 @@ class Spawner:
         runway = random.choice(runways)
 
         # Try a few positions to avoid spawning right next to another plane.
+        ix, iy = runway.iaf_position()
         for _attempt in range(8):
-            ix, iy = runway.iaf_position()
             side_x, side_y = self._random_edge_point_near(ix, iy)
             if self._spawn_position_clear(side_x, side_y, aircraft_list):
                 break

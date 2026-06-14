@@ -18,13 +18,14 @@ from config import (
 from atc.aircraft import (
     PHASE_INBOUND, PHASE_APPROACH, PHASE_LANDED,
     PHASE_TAKEOFF, PHASE_DEPARTURE, PHASE_DESPAWNED,
+    angle_diff,
 )
 from atc.level import list_levels, Spawner
 from atc.radar import RadarScreen, screen_to_world
 from atc.radio import RadioManager
 from atc.savegame import Savegame
 from atc.scoring import Scoring, check_separation, check_runway_conflicts
-from atc.ui import UIController, fmt_clock
+from atc.ui import UIController
 
 
 STATE_MENU = "MENU"
@@ -101,6 +102,7 @@ class GameManager:
         self.fire_rescue_alerted = False
         self.weather_warning = None
         self.weather_change_done = False
+        self.show_help = False
 
         # Menu / end-screen interactive rectangles.
         self._menu_rects = []
@@ -116,13 +118,22 @@ class GameManager:
                     pygame.quit()
                     sys.exit(0)
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    if self.state == STATE_PLAYING:
+                    if self.show_help:
+                        self.show_help = False
+                    elif self.state == STATE_PLAYING:
                         self.state = STATE_MENU
                     elif self.state == STATE_LEVEL_END:
                         self.state = STATE_MENU
                     else:
                         pygame.quit()
                         sys.exit(0)
+                    continue
+                if event.type == pygame.KEYDOWN and event.key in (
+                        pygame.K_F1, pygame.K_h):
+                    self.show_help = not self.show_help
+                    continue
+                if self.show_help:
+                    continue  # help overlay swallows other input
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._handle_click(event.pos)
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
@@ -130,6 +141,8 @@ class GameManager:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                     if self.state == STATE_PLAYING:
                         self.paused = not self.paused
+                elif event.type == pygame.KEYDOWN and self.state == STATE_PLAYING:
+                    self._handle_keydown_playing(event.key)
 
             self._update(dt)
             self._render()
@@ -179,10 +192,15 @@ class GameManager:
                 ac.snapshot_radar()
 
         # Separation check (airborne) + runway/intersection conflicts (ground).
-        collision = check_separation(self.aircraft_list, self.scoring)
-        collision = check_runway_conflicts(
-            self.aircraft_list, self.airport, self.scoring) or collision
-        if collision:
+        # Each check returns the warning pairs it observed this frame; we
+        # reconcile stale pairs once against their union so a pair one check
+        # can't see (e.g. a low crossing-runway pair the airborne check
+        # excludes) isn't force-cleared and re-charged every frame.
+        collision_air, seen_air = check_separation(self.aircraft_list, self.scoring)
+        collision_gnd, seen_gnd = check_runway_conflicts(
+            self.aircraft_list, self.airport, self.scoring)
+        self.scoring.reconcile_warnings(seen_air | seen_gnd)
+        if collision_air or collision_gnd:
             self._end_level(collision=True)
             return
 
@@ -242,14 +260,23 @@ class GameManager:
                 ac.handed_off = True  # avoid double-counting
             if not ac.given_wind:
                 self.scoring.add_no_wind_landing()
+            self.scoring.add_landing()
             ac.phase = PHASE_DESPAWNED
             return
 
-        # Departure leaving radar without handoff.
+        # Departure reaching its boundary exit fix (or otherwise leaving radar)
+        # has left the sector. The exit fixes sit just inside the radar edge, so
+        # we despawn on reaching the fix rather than waiting for the aircraft to
+        # cross the boundary (it would just orbit the fix forever otherwise).
         if ac.phase == PHASE_DEPARTURE:
-            if not self._is_inside_radar(ac.x, ac.y, margin=1.5):
+            reached_exit = False
+            if ac.exit_waypoint is not None:
+                _n, ex, ey = ac.exit_waypoint
+                reached_exit = ac.distance_to(ex, ey) < 2.5
+            if reached_exit or not self._is_inside_radar(ac.x, ac.y, margin=1.5):
                 if not ac.handed_off:
                     self.scoring.add_missed_handoff()
+                self.scoring.add_departure()
                 ac.phase = PHASE_DESPAWNED
                 return
 
@@ -371,10 +398,15 @@ class GameManager:
                 r.active = r.name in change.get("activate_runways", [])
             self.airport.wind_dir = change.get("wind_dir", self.airport.wind_dir)
             self.airport.wind_speed = change.get("wind_speed", self.airport.wind_speed)
+            self.airport.qnh = change.get("qnh", self.airport.qnh)
+            # New conditions => a new ATIS is published under the next letter.
+            self.airport.advance_atis()
             self.radio.transmit("ATIS",
-                                f"Active runways now {new_active}, wind "
+                                f"Information {self.airport.atis_phonetic()}, "
+                                f"active runways now {new_active}, wind "
                                 f"{self.airport.wind_dir:03d} at "
-                                f"{self.airport.wind_speed} knots.")
+                                f"{self.airport.wind_speed} knots, "
+                                f"QNH {self.airport.qnh}.")
 
     # ============================================================ rendering
     def _render(self):
@@ -386,6 +418,8 @@ class GameManager:
         elif self.state == STATE_LEVEL_END:
             self._render_playing()  # frozen background
             self._render_level_end_overlay()
+        if self.show_help:
+            self._render_help_overlay()
 
     def _render_playing(self):
         self.radar.render(self.screen, self.airport, self.aircraft_list,
@@ -403,6 +437,75 @@ class GameManager:
         self.screen.blit(txt, txt.get_rect(center=(cx, cy)))
         self.screen.blit(sub, sub.get_rect(center=(cx, cy + 40)))
 
+    # -------------------------------------------------------- help overlay
+    def _render_help_overlay(self):
+        dim = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 205))
+        self.screen.blit(dim, (0, 0))
+
+        w, h = 980, 620
+        rect = pygame.Rect((WINDOW_WIDTH - w) // 2, (WINDOW_HEIGHT - h) // 2, w, h)
+        pygame.draw.rect(self.screen, PANEL_BG, rect)
+        pygame.draw.rect(self.screen, ACCENT_BLUE, rect, 2)
+
+        title = self.fonts["large"].render("HELP  /  QUICK REFERENCE",
+                                           True, ACCENT_CYAN)
+        self.screen.blit(title, (rect.x + 30, rect.y + 22))
+        hint = self.fonts["small"].render("Press H, F1 or ESC to close",
+                                          True, TEXT_VERY_DIM)
+        self.screen.blit(hint, hint.get_rect(topright=(rect.right - 30, rect.y + 30)))
+
+        col1_x = rect.x + 30
+        col2_x = rect.x + 510
+        y0 = rect.y + 80
+
+        def section(x, y, heading, rows):
+            t = self.fonts["medium"].render(heading, True, ACCENT_BLUE)
+            self.screen.blit(t, (x, y))
+            y += 28
+            for left, right in rows:
+                ls = self.fonts["small"].render(left, True, SELECTED_COLOR)
+                rs = self.fonts["small"].render(right, True, TEXT_COLOR)
+                self.screen.blit(ls, (x, y))
+                self.screen.blit(rs, (x + 150, y))
+                y += 22
+            return y + 12
+
+        y = section(col1_x, y0, "MOUSE", [
+            ("Left click", "Select aircraft / press button"),
+            ("Right click", "Vector selected aircraft to point"),
+        ])
+        y = section(col1_x, y, "KEYBOARD", [
+            ("Up / Down", "Climb / descend 1000 ft"),
+            ("Left / Right", "Turn 10 deg left / right"),
+            ("[  /  ]", "Speed -10 / +10 kt"),
+            ("L", "Clear to land (active runway)"),
+            ("O / N", "Hold / resume navigation"),
+            ("G", "Go around"),
+            ("T", "Hand off (Tower / Center)"),
+            ("W", "Pass wind information"),
+            ("F", "Alert Fire & Rescue"),
+            ("SPACE / ESC", "Pause / back to menu"),
+        ])
+
+        y = section(col2_x, y0, "DATABLOCK", [
+            ("Line 1", "Callsign"),
+            ("Line 2", "Type + ground speed"),
+            ("Line 3", "Flight level + climb/descent"),
+        ])
+        y = section(col2_x, y, "BLIP COLORS", [
+            ("Blue", "Normal traffic"),
+            ("Yellow", "Selected"),
+            ("Amber", "Minimum fuel / holding"),
+            ("Red", "Emergency / loss of separation"),
+            ("Green", "Handed off"),
+        ])
+        section(col2_x, y, "GOAL", [
+            ("Arrivals", "Descend, clear to land, hand off"),
+            ("Departures", "Climb out, hand off to Center"),
+            ("Always", "Keep traffic separated"),
+        ])
+
     # ----------------------------------------------------------- main menu
     def _render_menu(self):
         f_huge = self.fonts["huge"]
@@ -418,7 +521,7 @@ class GameManager:
         instructions = [
             "Click a level to start. Levels unlock as you earn at least 1 star.",
             "Click traffic to select  -  Right-click radar to vector  -  "
-            "SPACE pause  -  ESC back / quit",
+            "SPACE pause  -  H help  -  ESC back / quit",
         ]
         for i, t in enumerate(instructions):
             txt = f_small.render(t, True, TEXT_VERY_DIM)
@@ -488,7 +591,7 @@ class GameManager:
         dim.fill((0, 0, 0, 180))
         self.screen.blit(dim, (0, 0))
 
-        w, h = 700, 480
+        w, h = 700, 520
         rect = pygame.Rect((WINDOW_WIDTH - w) // 2, (WINDOW_HEIGHT - h) // 2, w, h)
         pygame.draw.rect(self.screen, PANEL_BG, rect)
         pygame.draw.rect(self.screen, ACCENT_BLUE, rect, 2)
@@ -514,10 +617,14 @@ class GameManager:
         f = self.fonts["medium"]
         lines = [
             f"Final Score: {sc.score}",
-            f"Warnings:        {sc.warnings}",
-            f"Go-Arounds:      {sc.go_arounds}",
-            f"Missed Handoffs: {sc.missed_handoffs}",
+            f"Arrivals Landed:   {sc.landings}",
+            f"Departures Out:    {sc.departures}",
+            f"Warnings:          {sc.warnings}",
+            f"Go-Arounds:        {sc.go_arounds}",
+            f"Missed Handoffs:   {sc.missed_handoffs}",
         ]
+        if sc.no_wind_landings:
+            lines.append(f"No-Wind Landings:  {sc.no_wind_landings}")
         if sc.collision:
             lines.append("Mid-air collision!")
         if sc.crashed:
@@ -531,7 +638,7 @@ class GameManager:
             if "forgot" in line.lower():
                 col = WARNING_COLOR
             t = f.render(line, True, col)
-            self.screen.blit(t, (rect.x + 60, rect.y + 200 + i * 28))
+            self.screen.blit(t, (rect.x + 60, rect.y + 178 + i * 26))
 
         # Buttons
         self._end_buttons = []
@@ -573,6 +680,50 @@ class GameManager:
         wx, wy = screen_to_world(mx, my)
         hdg = int(math.degrees(math.atan2(wx - ac.x, wy - ac.y))) % 360
         self._handle_command("heading", hdg)
+
+    # ------------------------------------------------- keyboard command keys
+    def _handle_keydown_playing(self, key):
+        """Keyboard shortcuts that drive the selected aircraft. They funnel
+        through the same `_handle_command` path as the on-screen buttons, so
+        the radio call + readback still happen."""
+        ac = self.selected_aircraft
+        if ac is None or not ac.is_active:
+            return
+        if key == pygame.K_UP:
+            self._handle_command("altitude", int(ac.target_altitude) + 1000)
+        elif key == pygame.K_DOWN:
+            self._handle_command("altitude", max(1000, int(ac.target_altitude) - 1000))
+        elif key == pygame.K_LEFT:
+            self._handle_command("heading", (int(ac.heading) - 10) % 360)
+        elif key == pygame.K_RIGHT:
+            self._handle_command("heading", (int(ac.heading) + 10) % 360)
+        elif key in (pygame.K_LEFTBRACKET, pygame.K_MINUS):
+            self._handle_command("speed", max(120, int(ac.target_speed) - 10))
+        elif key in (pygame.K_RIGHTBRACKET, pygame.K_EQUALS):
+            self._handle_command("speed", int(ac.target_speed) + 10)
+        elif key == pygame.K_l:  # clear to land on the first active runway
+            runways = self.airport.active_arrival_runways()
+            if runways and ac.is_arrival:
+                self._handle_command("clear_land", runways[0])
+        elif key == pygame.K_o:
+            if ac.is_arrival and not ac.holding:
+                self._handle_command("hold", None)
+        elif key == pygame.K_n:  # resume own navigation / cancel hold
+            if ac.holding:
+                self._handle_command("resume_hold", None)
+            else:
+                self._handle_command("resume_nav", None)
+        elif key == pygame.K_g:
+            if ac.phase == PHASE_APPROACH:
+                self._handle_command("go_around", None)
+        elif key == pygame.K_t:
+            if not ac.handed_off:
+                self._handle_command("handoff",
+                                     "tower" if ac.is_arrival else "center")
+        elif key == pygame.K_w:
+            self._handle_command("wind", None)
+        elif key == pygame.K_f:
+            self._alert_fire_rescue()
 
     def _click_menu(self, pos):
         for rect, lvl, unlocked in self._menu_rects:
@@ -627,14 +778,16 @@ class GameManager:
 
         elif name == "speed":
             kt = payload
-            rm.transmit("ATC", RadioManager.atc_speed(cs, kt))
+            rm.transmit("ATC", RadioManager.atc_speed(cs, kt, int(ac.speed)))
             rm.transmit(cs, RadioManager.rb_speed(cs, kt))
             ac.cmd_set_speed(kt)
 
         elif name == "heading":
             hdg = int(payload) % 360
-            rm.transmit("ATC", RadioManager.atc_heading(cs, hdg))
-            rm.transmit(cs, RadioManager.rb_heading(cs, hdg))
+            # Give the turn direction (shorter way round) like real vectoring.
+            turn = "right" if angle_diff(hdg, ac.heading) >= 0 else "left"
+            rm.transmit("ATC", RadioManager.atc_heading(cs, hdg, turn))
+            rm.transmit(cs, RadioManager.rb_heading(cs, hdg, turn))
             ac.cmd_set_heading(hdg)
 
         elif name == "resume_nav":
@@ -644,9 +797,15 @@ class GameManager:
 
         elif name == "clear_land":
             runway = payload
-            rm.transmit("ATC", RadioManager.atc_clear_to_land(cs, runway.name))
+            wd, ws = self.airport.wind_dir, self.airport.wind_speed
+            rm.transmit("ATC",
+                        RadioManager.atc_clear_to_land(cs, runway.name, wd, ws))
             rm.transmit(cs, RadioManager.rb_clear_to_land(cs, runway.name))
             ac.cmd_clear_to_land(runway)
+            # A real landing clearance includes the surface wind, satisfying
+            # the wind-information requirement automatically.
+            ac.given_wind = True
+            ac.wind_requested = True
 
         elif name == "hold":
             rm.transmit("ATC", RadioManager.atc_hold(cs))
@@ -724,11 +883,11 @@ class GameManager:
         self._last_level_played = level
         self.state = STATE_PLAYING
 
-        intro = (f"{self.airport.name}, wind "
-                 f"{self.airport.wind_dir:03d} at "
-                 f"{self.airport.wind_speed} knots, "
-                 f"runway in use "
-                 f"{', '.join(r.name for r in self.airport.active_arrival_runways())}.")
+        ap = self.airport
+        active = ", ".join(r.name for r in ap.active_arrival_runways())
+        intro = (f"{ap.name}, information {ap.atis_phonetic()}, "
+                 f"runway in use {active}, wind {ap.wind_dir:03d} at "
+                 f"{ap.wind_speed} knots, QNH {ap.qnh}.")
         self.radio.transmit("ATIS", intro)
 
     def _end_level(self, collision=False, crashed=False):

@@ -120,6 +120,9 @@ class UIController:
         put("WIND", wind_str)
         y += line_h * 2
 
+        put("QNH / INFO", f"{airport.qnh}  {airport.atis_letter}")
+        y += line_h * 2
+
         # Frequencies
         freq_title = self.fonts["tiny"].render("FREQUENCIES", True, TEXT_VERY_DIM)
         surface.blit(freq_title, (x, y))
@@ -142,8 +145,10 @@ class UIController:
         surface.blit(score_surf, (x, y))
         y += 30
 
-        # Stats
+        # Stats — throughput first (positive), then penalties.
         stats = [
+            ("Arrivals", game.scoring.landings),
+            ("Departures", game.scoring.departures),
             ("Warnings", game.scoring.warnings),
             ("Go-Arounds", game.scoring.go_arounds),
             ("Missed Handoffs", game.scoring.missed_handoffs),
@@ -325,9 +330,9 @@ class UIController:
             surface.blit(no, (rect.x + 14, rect.y + 50))
             return
 
-        # Header: callsign, type, phase + current/target alt + speed.
+        # Header: callsign, type, phase, squawk + current/target alt + speed.
         header = self.fonts["medium"].render(
-            f"{ac.callsign}  {ac.type}  {ac.phase}",
+            f"{ac.callsign}  {ac.type}  {ac.phase}  SQ{ac.squawk}",
             True, SELECTED_COLOR)
         surface.blit(header, (rect.x + 14, rect.y + 38))
         sub = self.fonts["tiny"].render(

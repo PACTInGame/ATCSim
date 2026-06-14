@@ -9,6 +9,7 @@
   "departure_rate_per_min": 0.6,
   "wind_dir": 260,
   "wind_speed": 14,
+  "qnh": 1020,
   "emergencies_enabled": true,
   "exits": [
     {"name": "NORTH", "x": 0,   "y": 25},

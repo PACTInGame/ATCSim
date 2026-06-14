@@ -93,6 +93,7 @@ FREQ_FIRE_RESCUE = "121.600"
 
 # ----- Scoring ---------------------------------------------------------------
 SCORE_START = 100
+SCORE_FLOOR = 0           # score never drops below this
 PENALTY_WARNING = 2
 PENALTY_GO_AROUND = 5
 PENALTY_MISSED_HANDOFF = 10
@@ -101,6 +102,15 @@ PENALTY_NO_WIND_INFO = 3
 STARS_3_THRESHOLD = 90
 STARS_2_THRESHOLD = 70
 STARS_1_THRESHOLD = 40
+
+# ----- Atmosphere / realism --------------------------------------------------
+# Below the transition altitude aircraft are referenced to QNH (feet); at and
+# above it they fly flight levels referenced to standard pressure.
+TRANSITION_ALTITUDE_FT = 6000
+# Standard speed limit (knots) below 10,000 ft for civil traffic.
+SPEED_LIMIT_BELOW_FL100 = 250
+SPEED_LIMIT_ALT_FT = 10000
+DEFAULT_QNH = 1013        # hPa, used when a level omits it
 
 # ----- Paths -----------------------------------------------------------------
 LEVELS_DIR = "levels"

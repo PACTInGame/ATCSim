@@ -7,6 +7,16 @@ Coordinates throughout the game use km from the airport center, with
 import math
 
 
+PHONETIC_ALPHABET = {
+    "A": "Alpha", "B": "Bravo", "C": "Charlie", "D": "Delta", "E": "Echo",
+    "F": "Foxtrot", "G": "Golf", "H": "Hotel", "I": "India", "J": "Juliet",
+    "K": "Kilo", "L": "Lima", "M": "Mike", "N": "November", "O": "Oscar",
+    "P": "Papa", "Q": "Quebec", "R": "Romeo", "S": "Sierra", "T": "Tango",
+    "U": "Uniform", "V": "Victor", "W": "Whiskey", "X": "X-ray", "Y": "Yankee",
+    "Z": "Zulu",
+}
+
+
 def heading_to_vector(heading_deg):
     """Return (dx, dy) unit vector for an aviation heading."""
     rad = math.radians(heading_deg)
@@ -93,15 +103,27 @@ class Airport:
     """An airport definition with a set of runways."""
 
     def __init__(self, name, runways, exit_waypoints=None,
-                 wind_dir=0, wind_speed=0):
+                 wind_dir=0, wind_speed=0, qnh=1013):
         self.name = name
         self.runways = runways  # list[Runway]
         # Exit fixes for departing aircraft, list of (name, x_km, y_km).
         self.exit_waypoints = exit_waypoints or self._default_exits()
         self.wind_dir = wind_dir
         self.wind_speed = wind_speed
+        self.qnh = qnh                 # altimeter setting (hPa)
+        self.atis_letter = "A"         # ATIS information letter (advances on change)
         # Cache of crossing points between runway strips: {(name_a, name_b): pt}.
         self._intersections = self._compute_intersections()
+
+    def atis_phonetic(self):
+        """Phonetic name of the current ATIS information letter (A -> Alpha)."""
+        return PHONETIC_ALPHABET.get(self.atis_letter, self.atis_letter)
+
+    def advance_atis(self):
+        """Cycle the ATIS information letter A->B->...->Z->A (new ATIS issued
+        when conditions such as wind/runway change)."""
+        nxt = (ord(self.atis_letter) - ord("A") + 1) % 26
+        self.atis_letter = chr(ord("A") + nxt)
 
     def _compute_intersections(self):
         result = {}
