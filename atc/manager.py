@@ -166,6 +166,11 @@ class GameManager:
 
         self.aircraft_list = [ac for ac in self.aircraft_list if ac.is_active]
 
+        # Drop the selection once the aircraft has left the airspace.
+        if (self.selected_aircraft is not None
+                and self.selected_aircraft not in self.aircraft_list):
+            self.selected_aircraft = None
+
         # Radar sweep / data block freeze.
         self.radar_timer += dt
         if self.radar_timer >= RADAR_REFRESH_SEC:
