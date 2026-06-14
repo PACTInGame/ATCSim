@@ -99,14 +99,14 @@ class RadarScreen:
         cx, cy = world_to_screen(0, 0)
         pygame.draw.circle(surface, ACCENT_CYAN, (int(cx), int(cy)), 4, 1)
 
-        for r in airport.runways:
-            self._draw_runway(surface, r)
-            self._draw_iaf(surface, r)
+        for i, r in enumerate(airport.runways):
+            self._draw_runway(surface, r, i)
+            self._draw_iaf(surface, r, i)
 
         for name, x, y in airport.exit_waypoints:
             self._draw_exit(surface, name, x, y)
 
-    def _draw_runway(self, surface, runway):
+    def _draw_runway(self, surface, runway, idx=0):
         # Draw the runway as a long thin line through the threshold,
         # in the direction of `heading` (touchdown points there).
         length_km = 3.0  # ~3 km long
@@ -120,16 +120,18 @@ class RadarScreen:
         sx2, sy2 = world_to_screen(x2, y2)
         color = RUNWAY_COLOR if runway.active else LINE_DIM
         pygame.draw.line(surface, color, (sx1, sy1), (sx2, sy2), 3)
-        # Draw the label near the threshold.
+        # Draw the label near the threshold, offset perpendicular to the
+        # runway. Stagger the perpendicular distance by index so the labels of
+        # closely-spaced parallel runways don't overprint each other.
         label = self.fonts["small"].render(runway.name, True, color)
-        # offset slightly perpendicular to the runway
         perp_dx, perp_dy = -dy, dx
-        lx = runway.threshold_x + perp_dx * 1.2
-        ly = runway.threshold_y + perp_dy * 1.2
+        offset_km = 1.4 + idx * 1.6
+        lx = runway.threshold_x + perp_dx * offset_km
+        ly = runway.threshold_y + perp_dy * offset_km
         slx, sly = world_to_screen(lx, ly)
         surface.blit(label, label.get_rect(center=(slx, sly)))
 
-    def _draw_iaf(self, surface, runway):
+    def _draw_iaf(self, surface, runway, idx=0):
         ix, iy = runway.iaf_position()
         sx, sy = world_to_screen(ix, iy)
         if not is_inside_radar(ix, iy):
@@ -140,8 +142,10 @@ class RadarScreen:
         tx, ty = runway.threshold_x, runway.threshold_y
         sx2, sy2 = world_to_screen(tx, ty)
         pygame.draw.line(surface, LINE_DIM, (sx, sy), (sx2, sy2), 1)
+        # Stagger the label vertically by index so parallel-runway IAF labels
+        # (which sit almost on top of each other) remain readable.
         lbl = self.fonts["tiny"].render(f"IAF {runway.name}", True, TEXT_VERY_DIM)
-        surface.blit(lbl, (sx + 8, sy - 6))
+        surface.blit(lbl, (sx + 8, sy - 6 + idx * 13))
 
     def _draw_exit(self, surface, name, x, y):
         sx, sy = world_to_screen(x, y)

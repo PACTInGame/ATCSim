@@ -36,6 +36,8 @@ def segment_intersection(p1, p2, p3, p4):
 class Runway:
     """A single runway with a fixed heading and threshold position."""
 
+    IAF_DISTANCE_KM = 18.0  # Initial Approach Fix distance on the centerline
+
     def __init__(self, name, heading, size, threshold_x=0.0, threshold_y=0.0):
         self.name = name              # e.g. "35", "26L"
         self.heading = heading % 360  # landing direction
@@ -57,7 +59,7 @@ class Runway:
         """Vector pointing in the landing direction."""
         return heading_to_vector(self.heading)
 
-    def iaf_position(self, distance_km=18.0):
+    def iaf_position(self, distance_km=IAF_DISTANCE_KM):
         """Initial Approach Fix on the extended centerline."""
         ax, ay = self.approach_vector()
         return (self.threshold_x + ax * distance_km,

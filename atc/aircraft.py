@@ -216,15 +216,24 @@ class Aircraft:
         rwy = self.target_runway
         if rwy is None:
             return
+
+        # Cleared to land: turn directly toward the runway and begin the
+        # approach as soon as we are within IAF range, rather than detouring
+        # all the way out to the IAF fix first. This gives priority/short
+        # approaches (important for low-fuel emergencies) and avoids wasteful
+        # back-tracking when an aircraft is already inside the IAF.
+        if self.cleared_to_land:
+            tx, ty = rwy.threshold_x, rwy.threshold_y
+            self.target_heading = self._heading_toward(tx, ty)
+            if self.distance_to(tx, ty) < rwy.IAF_DISTANCE_KM:
+                self.phase = PHASE_APPROACH
+            return
+
+        # Not cleared: proceed to the IAF and hold there.
         ix, iy = rwy.iaf_position()
         self.target_heading = self._heading_toward(ix, iy)
-
-        # Once near the IAF: if cleared, switch to APPROACH; otherwise hold.
         if self.distance_to(ix, iy) < 2.0:
-            if self.cleared_to_land:
-                self.phase = PHASE_APPROACH
-            else:
-                self.holding = True
+            self.holding = True
 
     def _nav_approach(self):
         rwy = self.target_runway
@@ -275,13 +284,19 @@ class Aircraft:
         rwy = self.target_runway
         if rwy is None:
             return
-        # Accelerate down the runway. Stay on the ground until V2.
-        v2 = self.attrs["min_speed"] + self.LIFTOFF_OFFSET_KT
-        self.target_speed = v2 + 10  # keep accelerating past V2
         self.target_heading = rwy.heading
         self.heading = rwy.heading
         self.target_altitude = 0.0
         self.altitude = 0.0
+        # Hold position on the runway until Tower grants takeoff clearance
+        # (the manager only grants it when the runway and any crossing runway
+        # are clear). This is what serializes departures on crossing runways.
+        if not self.takeoff_clearance:
+            self.target_speed = 0.0
+            return
+        # Accelerate down the runway. Stay on the ground until V2.
+        v2 = self.attrs["min_speed"] + self.LIFTOFF_OFFSET_KT
+        self.target_speed = v2 + 10  # keep accelerating past V2
         if self.speed >= v2:
             self.target_altitude = 5000.0  # initial climb-out
             self.phase = PHASE_DEPARTURE
@@ -307,11 +322,18 @@ class Aircraft:
             self.emergency_announced = False
 
     def trigger_low_fuel(self):
-        """Mark this aircraft as a low-fuel emergency."""
+        """Mark this aircraft as a low-fuel emergency.
+
+        Reserve is sized so a well-flown priority approach (expedite the
+        descent, vector straight in, clear to land) can make the runway in
+        time, while a mishandled one still runs dry. At 1 fuel-minute per 12
+        real seconds, 40 fuel-minutes is ~8 real minutes — enough for a direct
+        priority approach from anywhere emergencies trigger (within 35 km), but
+        less than the level length so an ignored emergency still crashes."""
         if self.emergency is None and self.is_arrival:
             self.emergency = "minimum_fuel"
             self.emergency_announced = False
-            self.fuel_minutes = 9.0   # ~9 fuel-minutes left (about 108s)
+            self.fuel_minutes = 40.0
 
     def trigger_engine_failure(self):
         if self.emergency is None and self.is_arrival:

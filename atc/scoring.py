@@ -148,10 +148,19 @@ def check_runway_conflicts(aircraft_list, airport, scoring):
     sequenced down final (handled by check_separation above 200 ft) are not
     falsely flagged.
     """
-    low = [a for a in aircraft_list
-           if a.is_active and a.altitude <= RUNWAY_LOW_FT
-           and a.target_runway is not None
-           and a.phase in (PHASE_APPROACH, PHASE_TAKEOFF, PHASE_DEPARTURE)]
+    def _is_factor(a):
+        if not (a.is_active and a.altitude <= RUNWAY_LOW_FT
+                and a.target_runway is not None):
+            return False
+        if a.phase in (PHASE_APPROACH, PHASE_DEPARTURE):
+            return True
+        # A departure still holding short (not yet rolling) is not a hazard;
+        # only count it once it has takeoff clearance and is moving.
+        if a.phase == PHASE_TAKEOFF:
+            return a.takeoff_clearance
+        return False
+
+    low = [a for a in aircraft_list if _is_factor(a)]
 
     collision = False
     for i in range(len(low)):

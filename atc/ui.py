@@ -127,7 +127,7 @@ class UIController:
         for label, freq in (("Tower", FREQ_TOWER),
                             ("Center", FREQ_CENTER),
                             ("Fire&Rescue", FREQ_FIRE_RESCUE)):
-            row = f"{label:<11}{freq}"
+            row = f"{label:<13}{freq}"
             surface.blit(f.render(row, True, TEXT_COLOR), (x, y))
             y += 18
         y += 10

@@ -252,7 +252,7 @@ class GameManager:
         return (-AIRSPACE_WIDTH_KM / 2 + margin <= x <= AIRSPACE_WIDTH_KM / 2 - margin and
                 -VISIBLE_HEIGHT_KM / 2 + margin <= y <= VISIBLE_HEIGHT_KM / 2 - margin)
 
-    HOLD_LEVELS = [4000, 6000, 8000, 10000, 12000]
+    HOLD_LEVELS = [4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000]
 
     def _update_holding_stacks(self):
         """Assign each newly-holding aircraft a distinct altitude in the stack
@@ -265,7 +265,9 @@ class GameManager:
                         and o.target_runway is ac.target_runway
                         and o.hold_fix_altitude is not None}
                 chosen = next((lvl for lvl in self.HOLD_LEVELS if lvl not in used),
-                              self.HOLD_LEVELS[-1])
+                              None)
+                if chosen is None:  # stack full: keep climbing above the top
+                    chosen = (max(used) + 2000) if used else self.HOLD_LEVELS[-1]
                 ac.hold_fix_altitude = chosen
                 ac.target_altitude = float(chosen)
             elif not ac.holding and ac.hold_fix_altitude is not None:
@@ -274,15 +276,22 @@ class GameManager:
     def _runway_clear_for_departure(self, runway, me):
         """True if no other aircraft is using `runway` or a crossing runway in
         a way that makes launching `me` unsafe. Keeps the auto-takeoff fair on
-        crossing-runway airports by holding departures until the path is clear."""
+        crossing-runway airports by holding departures until the path is clear.
+
+        Only *committed* traffic blocks (landing, already rolling, or climbing
+        out). A departure still waiting for its own clearance does not block,
+        otherwise two departures on crossing runways would deadlock."""
         for ac in self.aircraft_list:
             if ac is me or not ac.is_active or ac.target_runway is None:
                 continue
             if ac.altitude >= 600:
                 continue
+            committed = (ac.phase in (PHASE_APPROACH, PHASE_DEPARTURE)
+                         or (ac.phase == PHASE_TAKEOFF and ac.takeoff_clearance))
+            if not committed:
+                continue
             # Someone else low on the same runway (landing, rolling, climbing).
-            if ac.target_runway is runway and ac.phase in (
-                    PHASE_TAKEOFF, PHASE_DEPARTURE, PHASE_APPROACH):
+            if ac.target_runway is runway:
                 return False
             # An aircraft near the crossing point of an intersecting runway.
             inter = self.airport.intersection_of(runway, ac.target_runway)
@@ -298,9 +307,20 @@ class GameManager:
         # With this rate most levels see 1-2 emergencies, sometimes none.
         if random.random() > dt / 360.0:
             return
-        candidates = [a for a in self.aircraft_list
-                      if a.is_arrival and a.emergency is None
-                      and a.altitude > 4000 and not a.handed_off]
+        # Only declare emergencies on aircraft that are realistically within
+        # landing range (close enough and not so high they can't get down) so
+        # a prioritised approach can actually save them before fuel runs out.
+        candidates = []
+        for a in self.aircraft_list:
+            if not (a.is_arrival and a.emergency is None
+                    and not a.handed_off and a.altitude > 4000):
+                continue
+            if a.altitude > 11000 or a.target_runway is None:
+                continue
+            if a.distance_to(a.target_runway.threshold_x,
+                             a.target_runway.threshold_y) > 35.0:
+                continue
+            candidates.append(a)
         if not candidates:
             return
         ac = random.choice(candidates)
@@ -335,8 +355,8 @@ class GameManager:
         change_min = change.get("at_minute", 600)  # in-game minutes after start
         warn_lead = 0.5  # ~30 in-game seconds = 30/60 min ~ 0.5 min
         elapsed = self.game_minutes - GAME_START_MIN
+        new_active = ", ".join(change.get("activate_runways", []))
         if elapsed >= change_min - warn_lead and self.weather_warning is None:
-            new_active = ", ".join(change.get("activate_runways", []))
             self.weather_warning = (
                 f"Runways in Use will Change to {new_active}")
         if elapsed >= change_min:
