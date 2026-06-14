@@ -275,11 +275,16 @@ class UIController:
                          (rect.x + 12, rect.y + 32),
                          (rect.right - 12, rect.y + 32), 1)
 
-        # Show last N messages, fading older ones.
+        # Show last N messages, fading older ones. Clip to the comms column so
+        # a long radio line (e.g. the full ATIS) can't bleed into the COMMANDS
+        # panel to the right.
         history = radio.history[-10:]
         x = rect.x + 16
         y = rect.bottom - 30
         f = self.fonts["small"]
+        old_clip = surface.get_clip()
+        surface.set_clip(pygame.Rect(rect.x + 4, rect.y + 36,
+                                     rect.w - 12, rect.h - 40))
         for i, msg in enumerate(reversed(history)):
             fade = max(60, 230 - i * 18)
             if msg.source == "ATC":
@@ -296,8 +301,10 @@ class UIController:
             y -= 22
             if y < rect.y + 36:
                 break
+        surface.set_clip(old_clip)
 
-        # Highlight current transmission as a big subtitle bar at the very bottom.
+        # Highlight current transmission as a big subtitle bar at the very
+        # bottom (also clipped so a long line stays inside the bar).
         if radio.current is not None:
             bar = pygame.Rect(rect.x + 8, rect.bottom - 70,
                               rect.w - 16, 28)
@@ -306,7 +313,9 @@ class UIController:
             big = self.fonts["medium"].render(
                 f"{radio.current.source}: {radio.current.text}",
                 True, ACCENT_BLUE)
+            surface.set_clip(bar.inflate(-8, 0))
             surface.blit(big, (bar.x + 8, bar.y + 4))
+            surface.set_clip(old_clip)
 
     # ------------------------------------- command menu (selected aircraft)
     LABEL_H = 14

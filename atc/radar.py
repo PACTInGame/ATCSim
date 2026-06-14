@@ -125,7 +125,7 @@ class RadarScreen:
         # closely-spaced parallel runways don't overprint each other.
         label = self.fonts["small"].render(runway.name, True, color)
         perp_dx, perp_dy = -dy, dx
-        offset_km = 1.4 + idx * 1.6
+        offset_km = 1.8 + idx * 2.2
         lx = runway.threshold_x + perp_dx * offset_km
         ly = runway.threshold_y + perp_dy * offset_km
         slx, sly = world_to_screen(lx, ly)
@@ -191,8 +191,10 @@ class RadarScreen:
         ex, ey = world_to_screen(ex_km, ey_km)
         pygame.draw.line(surface, color, (sx, sy), (ex, ey), 1)
 
-        # Datablock.
-        self._draw_datablock(surface, ac, sx, sy, color)
+        # Datablock — skipped for aircraft on the ground (holding short or
+        # rolling) so their labels don't overprint runway/threshold markings.
+        if ac.altitude >= 50:
+            self._draw_datablock(surface, ac, sx, sy, color)
 
         # Selection ring.
         if ac is selected:

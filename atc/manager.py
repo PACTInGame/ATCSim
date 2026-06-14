@@ -443,7 +443,7 @@ class GameManager:
         dim.fill((0, 0, 0, 205))
         self.screen.blit(dim, (0, 0))
 
-        w, h = 980, 620
+        w, h = 1020, 620
         rect = pygame.Rect((WINDOW_WIDTH - w) // 2, (WINDOW_HEIGHT - h) // 2, w, h)
         pygame.draw.rect(self.screen, PANEL_BG, rect)
         pygame.draw.rect(self.screen, ACCENT_BLUE, rect, 2)
@@ -456,7 +456,7 @@ class GameManager:
         self.screen.blit(hint, hint.get_rect(topright=(rect.right - 30, rect.y + 30)))
 
         col1_x = rect.x + 30
-        col2_x = rect.x + 510
+        col2_x = rect.x + 545
         y0 = rect.y + 80
 
         def section(x, y, heading, rows):
@@ -472,8 +472,8 @@ class GameManager:
             return y + 12
 
         y = section(col1_x, y0, "MOUSE", [
-            ("Left click", "Select aircraft / press button"),
-            ("Right click", "Vector selected aircraft to point"),
+            ("Left click", "Select aircraft / button"),
+            ("Right click", "Vector to clicked point"),
         ])
         y = section(col1_x, y, "KEYBOARD", [
             ("Up / Down", "Climb / descend 1000 ft"),
