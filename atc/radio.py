@@ -53,6 +53,14 @@ class RadioManager:
         return f"{callsign}, keep speed not above {knots} knots."
 
     @staticmethod
+    def atc_heading(callsign, heading):
+        return f"{callsign}, fly heading {heading:03d}."
+
+    @staticmethod
+    def atc_resume_nav(callsign):
+        return f"{callsign}, resume own navigation."
+
+    @staticmethod
     def atc_clear_to_land(callsign, runway):
         return f"{callsign}, cleared to land runway {runway}."
 
@@ -84,6 +92,14 @@ class RadioManager:
     @staticmethod
     def rb_speed(callsign, knots):
         return f"Speed not above {knots} knots, {callsign}."
+
+    @staticmethod
+    def rb_heading(callsign, heading):
+        return f"Heading {heading:03d}, {callsign}."
+
+    @staticmethod
+    def rb_resume_nav(callsign):
+        return f"Resuming own navigation, {callsign}."
 
     @staticmethod
     def rb_clear_to_land(callsign, runway):

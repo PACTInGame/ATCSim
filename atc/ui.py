@@ -361,6 +361,33 @@ class UIController:
             self.buttons.append(Button(r, str(s), "speed", s))
         row_y += self.ROW_H
 
+        # Heading / vector row. Relative turns are computed off the current
+        # heading; cardinal headings and OWN NAV round it out. Vectoring only
+        # applies to en-route aircraft (right-click the radar also vectors).
+        vector_ok = ac.phase in ("INBOUND", "DEPARTURE")
+        h = int(ac.heading)
+        hdg_items = [
+            ("L30", "heading", (h - 30) % 360),
+            ("L10", "heading", (h - 10) % 360),
+            ("R10", "heading", (h + 10) % 360),
+            ("R30", "heading", (h + 30) % 360),
+            ("N", "heading", 360),
+            ("E", "heading", 90),
+            ("S", "heading", 180),
+            ("W", "heading", 270),
+            ("OWN", "resume_nav", None),
+        ]
+        small_w = inner_w // len(hdg_items)
+        cur = "OWN NAV" if ac.assigned_heading is None else f"HDG {int(ac.assigned_heading):03d}"
+        self._row_label(surface, f"HEADING  ({cur})", x0, row_y)
+        btn_y = row_y + self.LABEL_H
+        for i, (lbl, action, payload) in enumerate(hdg_items):
+            r = pygame.Rect(x0 + i * small_w, btn_y, small_w - 4, self.BUTTON_H)
+            col = ACCENT_BLUE if action == "heading" else ACCENT_CYAN
+            self.buttons.append(Button(r, lbl, action, payload,
+                                       color=col, enabled=vector_ok))
+        row_y += self.ROW_H
+
         # Cleared to land row
         self._row_label(surface, "CLEAR TO LAND", x0, row_y)
         btn_y = row_y + self.LABEL_H

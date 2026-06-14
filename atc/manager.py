@@ -16,15 +16,14 @@ from config import (
     SUCCESS_COLOR, SELECTED_COLOR, PANEL_BG, PANEL_BG_DARK, LINE_COLOR,
 )
 from atc.aircraft import (
-    PHASE_INBOUND, PHASE_HOLDING, PHASE_APPROACH, PHASE_LANDED,
+    PHASE_INBOUND, PHASE_APPROACH, PHASE_LANDED,
     PHASE_TAKEOFF, PHASE_DEPARTURE, PHASE_DESPAWNED,
 )
-from atc.airport import heading_to_vector
 from atc.level import list_levels, Spawner
-from atc.radar import RadarScreen, world_to_screen
+from atc.radar import RadarScreen, screen_to_world
 from atc.radio import RadioManager
 from atc.savegame import Savegame
-from atc.scoring import Scoring, check_separation
+from atc.scoring import Scoring, check_separation, check_runway_conflicts
 from atc.ui import UIController, fmt_clock
 
 
@@ -36,12 +35,26 @@ STATE_LEVEL_END = "LEVEL_END"
 # ------------------------------------------------------------- font loader --
 
 def make_fonts():
+    # Prefer a monospace face for aligned datablocks/readouts. match_font walks
+    # a comma-separated preference list and returns a usable path on any OS,
+    # falling back to pygame's bundled default font if none are installed.
+    mono_path = pygame.font.match_font("consolas,dejavusansmono,liberationmono,"
+                                       "couriernew,monospace")
+
+    def f(size, bold=False):
+        if mono_path:
+            font = pygame.font.Font(mono_path, size)
+            font.set_bold(bold)
+        else:
+            font = pygame.font.SysFont(None, size, bold=bold)
+        return font
+
     return {
-        "tiny":   pygame.font.SysFont("consolas", 12),
-        "small":  pygame.font.SysFont("consolas", 15),
-        "medium": pygame.font.SysFont("consolas", 18, bold=True),
-        "large":  pygame.font.SysFont("consolas", 28, bold=True),
-        "huge":   pygame.font.SysFont("consolas", 48, bold=True),
+        "tiny":   f(13),
+        "small":  f(16),
+        "medium": f(19, bold=True),
+        "large":  f(28, bold=True),
+        "huge":   f(48, bold=True),
     }
 
 
@@ -83,6 +96,7 @@ class GameManager:
         self.real_elapsed = 0.0
         self.game_minutes = GAME_START_MIN
         self.radar_timer = 0.0
+        self.paused = False
 
         self.fire_rescue_alerted = False
         self.weather_warning = None
@@ -111,6 +125,11 @@ class GameManager:
                         sys.exit(0)
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._handle_click(event.pos)
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                    self._handle_right_click(event.pos)
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                    if self.state == STATE_PLAYING:
+                        self.paused = not self.paused
 
             self._update(dt)
             self._render()
@@ -118,8 +137,10 @@ class GameManager:
 
     # =========================================================== update ====
     def _update(self, dt):
-        if self.state == STATE_PLAYING:
-            self._update_playing(dt)
+        if self.state == STATE_PLAYING and not self.paused:
+            # Cap dt so a long pause (or a stalled frame) can't teleport
+            # aircraft with one huge physics step on resume.
+            self._update_playing(min(dt, 0.1))
 
     def _update_playing(self, dt):
         # Real-time game-clock update (heavily accelerated).
@@ -133,6 +154,16 @@ class GameManager:
         for ac in list(self.aircraft_list):
             ac.update(dt)
             self._handle_aircraft_state_changes(ac)
+
+        # Crashes from fuel starvation. Checked *before* filtering inactive
+        # aircraft out of the list so a crashed aircraft (which stays active for
+        # one frame) is always observed.
+        for ac in self.aircraft_list:
+            if ac.emergency == "crashed":
+                self.scoring.add_crash()
+                self._end_level(crashed=True)
+                return
+
         self.aircraft_list = [ac for ac in self.aircraft_list if ac.is_active]
 
         # Radar sweep / data block freeze.
@@ -142,18 +173,16 @@ class GameManager:
             for ac in self.aircraft_list:
                 ac.snapshot_radar()
 
-        # Separation check.
+        # Separation check (airborne) + runway/intersection conflicts (ground).
         collision = check_separation(self.aircraft_list, self.scoring)
+        collision = check_runway_conflicts(
+            self.aircraft_list, self.airport, self.scoring) or collision
         if collision:
             self._end_level(collision=True)
             return
 
-        # Crashes from fuel.
-        for ac in self.aircraft_list:
-            if ac.emergency == "crashed":
-                self.scoring.add_crash()
-                self._end_level(crashed=True)
-                return
+        # Stack holding aircraft vertically so they don't pile onto one fix.
+        self._update_holding_stacks()
 
         # Spawner (uses real-time pacing). The spawner appends to the list
         # itself for spacing checks, so we just acknowledge the new entries.
@@ -183,11 +212,11 @@ class GameManager:
             self.radio.transmit(ac.callsign,
                                 RadioManager.call_wind_request(ac.callsign))
 
-        # Departures: as soon as runway is clear, give automatic takeoff
-        # clearance and start the roll.
+        # Departures: as soon as the runway (and any crossing runway) is clear,
+        # give automatic takeoff clearance and start the roll.
         if ac.phase == PHASE_TAKEOFF and not ac.takeoff_clearance:
             rw = ac.target_runway
-            if rw is not None and (rw.occupied_by in (None, ac.callsign)):
+            if rw is not None and self._runway_clear_for_departure(rw, ac):
                 rw.occupied_by = ac.callsign
                 ac.takeoff_clearance = True
                 ac.target_speed = ac.attrs["min_speed"] + 30
@@ -222,6 +251,44 @@ class GameManager:
     def _is_inside_radar(self, x, y, margin=0.0):
         return (-AIRSPACE_WIDTH_KM / 2 + margin <= x <= AIRSPACE_WIDTH_KM / 2 - margin and
                 -VISIBLE_HEIGHT_KM / 2 + margin <= y <= VISIBLE_HEIGHT_KM / 2 - margin)
+
+    HOLD_LEVELS = [4000, 6000, 8000, 10000, 12000]
+
+    def _update_holding_stacks(self):
+        """Assign each newly-holding aircraft a distinct altitude in the stack
+        for its runway so holders maintain vertical separation instead of all
+        orbiting at the same point and colliding."""
+        for ac in self.aircraft_list:
+            if ac.holding and ac.hold_fix_altitude is None:
+                used = {o.hold_fix_altitude for o in self.aircraft_list
+                        if o is not ac and o.holding
+                        and o.target_runway is ac.target_runway
+                        and o.hold_fix_altitude is not None}
+                chosen = next((lvl for lvl in self.HOLD_LEVELS if lvl not in used),
+                              self.HOLD_LEVELS[-1])
+                ac.hold_fix_altitude = chosen
+                ac.target_altitude = float(chosen)
+            elif not ac.holding and ac.hold_fix_altitude is not None:
+                ac.hold_fix_altitude = None
+
+    def _runway_clear_for_departure(self, runway, me):
+        """True if no other aircraft is using `runway` or a crossing runway in
+        a way that makes launching `me` unsafe. Keeps the auto-takeoff fair on
+        crossing-runway airports by holding departures until the path is clear."""
+        for ac in self.aircraft_list:
+            if ac is me or not ac.is_active or ac.target_runway is None:
+                continue
+            if ac.altitude >= 600:
+                continue
+            # Someone else low on the same runway (landing, rolling, climbing).
+            if ac.target_runway is runway and ac.phase in (
+                    PHASE_TAKEOFF, PHASE_DEPARTURE, PHASE_APPROACH):
+                return False
+            # An aircraft near the crossing point of an intersecting runway.
+            inter = self.airport.intersection_of(runway, ac.target_runway)
+            if inter is not None and ac.distance_to(*inter) < 4.0:
+                return False
+        return True
 
     # ------------------------------------------------------ trigger emergencies
     def _maybe_trigger_emergency(self, dt):
@@ -299,6 +366,17 @@ class GameManager:
         self.radar.render(self.screen, self.airport, self.aircraft_list,
                           self.selected_aircraft, self.weather_warning)
         self.ui.render(self.screen, self)
+        if self.paused and self.state == STATE_PLAYING:
+            self._render_paused_overlay()
+
+    def _render_paused_overlay(self):
+        from config import RADAR_X, RADAR_Y, RADAR_WIDTH, RADAR_HEIGHT
+        txt = self.fonts["huge"].render("PAUSED", True, ACCENT_CYAN)
+        sub = self.fonts["small"].render("Press SPACE to resume", True, TEXT_DIM)
+        cx = RADAR_X + RADAR_WIDTH // 2
+        cy = RADAR_Y + RADAR_HEIGHT // 2
+        self.screen.blit(txt, txt.get_rect(center=(cx, cy)))
+        self.screen.blit(sub, sub.get_rect(center=(cx, cy + 40)))
 
     # ----------------------------------------------------------- main menu
     def _render_menu(self):
@@ -314,7 +392,8 @@ class GameManager:
 
         instructions = [
             "Click a level to start. Levels unlock as you earn at least 1 star.",
-            "ESC = back to menu / quit",
+            "Click traffic to select  -  Right-click radar to vector  -  "
+            "SPACE pause  -  ESC back / quit",
         ]
         for i, t in enumerate(instructions):
             txt = f_small.render(t, True, TEXT_VERY_DIM)
@@ -349,7 +428,13 @@ class GameManager:
             self.screen.blit(id_label, (rect.x + 14, rect.y + 8))
             name = f_small.render(lvl.name,
                                   True, TEXT_COLOR if unlocked else TEXT_VERY_DIM)
+            # Clip the name so a long airport name can't run under the stars.
+            name_clip = pygame.Rect(rect.x + 14, rect.y + 32,
+                                    rect.w - 14 - 84, 18)
+            old = self.screen.get_clip()
+            self.screen.set_clip(name_clip)
             self.screen.blit(name, (rect.x + 14, rect.y + 32))
+            self.screen.set_clip(old)
 
             details = (f"ARR {lvl.arrival_rate:.1f}/min   "
                        f"DEP {lvl.departure_rate:.1f}/min   "
@@ -446,6 +531,24 @@ class GameManager:
         elif self.state == STATE_LEVEL_END:
             self._click_level_end(pos)
 
+    def _handle_right_click(self, pos):
+        """Right-click on the radar vectors the selected aircraft toward the
+        clicked point (a quick way to assign a heading)."""
+        if self.state != STATE_PLAYING:
+            return
+        mx, my = pos
+        if not (RADAR_X <= mx < RADAR_X + RADAR_WIDTH and
+                RADAR_Y <= my < RADAR_Y + RADAR_HEIGHT):
+            return
+        ac = self.selected_aircraft
+        if ac is None or not ac.is_active:
+            return
+        if ac.phase not in (PHASE_INBOUND, PHASE_DEPARTURE):
+            return
+        wx, wy = screen_to_world(mx, my)
+        hdg = int(math.degrees(math.atan2(wx - ac.x, wy - ac.y))) % 360
+        self._handle_command("heading", hdg)
+
     def _click_menu(self, pos):
         for rect, lvl, unlocked in self._menu_rects:
             if rect.collidepoint(pos) and unlocked:
@@ -502,6 +605,17 @@ class GameManager:
             rm.transmit("ATC", RadioManager.atc_speed(cs, kt))
             rm.transmit(cs, RadioManager.rb_speed(cs, kt))
             ac.cmd_set_speed(kt)
+
+        elif name == "heading":
+            hdg = int(payload) % 360
+            rm.transmit("ATC", RadioManager.atc_heading(cs, hdg))
+            rm.transmit(cs, RadioManager.rb_heading(cs, hdg))
+            ac.cmd_set_heading(hdg)
+
+        elif name == "resume_nav":
+            ac.cmd_resume_own_nav()
+            rm.transmit("ATC", RadioManager.atc_resume_nav(cs))
+            rm.transmit(cs, RadioManager.rb_resume_nav(cs))
 
         elif name == "clear_land":
             runway = payload
@@ -581,6 +695,7 @@ class GameManager:
         self.fire_rescue_alerted = False
         self.weather_warning = None
         self.weather_change_done = False
+        self.paused = False
         self._last_level_played = level
         self.state = STATE_PLAYING
 

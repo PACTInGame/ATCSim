@@ -1,0 +1,18 @@
+{
+  "level_id": 6,
+  "name": "DUB - Dublin, Ireland",
+  "runways": [
+    {"name": "28", "heading": 280, "size": "large", "threshold_x": 2.0, "threshold_y": 0.0}
+  ],
+  "arrival_rate_per_min": 0.8,
+  "departure_rate_per_min": 0.7,
+  "wind_dir": 270,
+  "wind_speed": 14,
+  "emergencies_enabled": true,
+  "exits": [
+    {"name": "NORTH", "x": 0,   "y": 25},
+    {"name": "EAST",  "x": 45,  "y": 0},
+    {"name": "SOUTH", "x": 0,   "y": -25},
+    {"name": "WEST",  "x": -45, "y": 0}
+  ]
+}

@@ -23,7 +23,7 @@ class LevelData:
         self.level_id = level_id
         self.name = name
         self.runways = runways
-        self.arrival_rate = arrival_rate      # per in-game minute
+        self.arrival_rate = arrival_rate      # per real minute of play (see Spawner)
         self.departure_rate = departure_rate
         self.emergencies_enabled = emergencies_enabled
         self.weather_change = weather_change  # optional dict

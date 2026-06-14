@@ -16,10 +16,7 @@ from config import (
     ACCENT_BLUE, ACCENT_CYAN, RUNWAY_COLOR,
     DANGER_COLOR, WARNING_COLOR, SELECTED_COLOR, SUCCESS_COLOR,
 )
-from atc.aircraft import (
-    PHASE_INBOUND, PHASE_HOLDING, PHASE_APPROACH,
-    PHASE_TAKEOFF, PHASE_DEPARTURE, PHASE_LANDED,
-)
+from atc.aircraft import PHASE_LANDED
 from atc.airport import heading_to_vector
 
 
@@ -51,7 +48,7 @@ class RadarScreen:
     """Draws the central radar viewport, airport, runways and aircraft."""
 
     def __init__(self, fonts):
-        self.fonts = fonts  # dict with keys: small, medium, large, mono
+        self.fonts = fonts  # dict with keys: tiny, small, medium, large, huge
 
     # ------------------------------------------------------------- dispatcher
     def render(self, surface, airport, aircraft_list, selected, weather_msg=None):
@@ -164,7 +161,7 @@ class RadarScreen:
         sx, sy = world_to_screen(ac.radar_x, ac.radar_y)
 
         # Color by emergency / warning / selected.
-        if ac.emergency in ("mayday_fuel", "engine_failure"):
+        if ac.emergency in ("mayday_fuel", "engine_failure", "crashed"):
             color = DANGER_COLOR
         elif ac.warning:
             color = DANGER_COLOR

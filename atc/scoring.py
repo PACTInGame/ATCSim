@@ -9,6 +9,9 @@ from config import (
     WARNING_HORIZ_KM, WARNING_VERT_FT,
     COLLISION_HORIZ_KM, COLLISION_VERT_FT,
 )
+from atc.aircraft import (
+    PHASE_APPROACH, PHASE_TAKEOFF, PHASE_DEPARTURE, PHASE_LANDED,
+)
 
 
 class Scoring:
@@ -88,7 +91,7 @@ def check_separation(aircraft_list, scoring):
 
     collision = False
     active = [a for a in aircraft_list
-              if a.is_active and a.altitude > 200 and a.phase != "LANDED"]
+              if a.is_active and a.altitude > 200 and a.phase != PHASE_LANDED]
 
     seen_pairs = set()
     for i in range(len(active)):
@@ -116,5 +119,64 @@ def check_separation(aircraft_list, scoring):
     stale = scoring._warning_pairs - seen_pairs
     for key in list(stale):
         scoring._warning_pairs.discard(key)
+
+    return collision
+
+
+# ------------------------------------------------- runway conflict checking --
+
+# Low-altitude band (ft) for runway/ground ops, complements check_separation
+# which only looks above 200 ft. Partitioning by altitude avoids double-counting.
+RUNWAY_LOW_FT = 300
+# Distance (km) considered a same-runway head-on (takeoff into a landing).
+SAME_RUNWAY_CONFLICT_KM = 3.0
+# Distances (km) from a crossing point for a crossing-runway incursion.
+CROSSING_COLLISION_KM = 1.2
+CROSSING_WARNING_KM = 3.0
+
+
+def check_runway_conflicts(aircraft_list, airport, scoring):
+    """Detect runway incursions the airborne separation check can't see.
+
+    Two cases are covered:
+      * Same runway, opposite usage (a departure rolling while an arrival is
+        landing on it) at close range -> collision.
+      * Crossing runways (e.g. ZRH 16/28): two low aircraft both near the
+        shared crossing point -> collision, or near it -> warning.
+
+    Only aircraft at/below RUNWAY_LOW_FT are considered, so in-trail arrivals
+    sequenced down final (handled by check_separation above 200 ft) are not
+    falsely flagged.
+    """
+    low = [a for a in aircraft_list
+           if a.is_active and a.altitude <= RUNWAY_LOW_FT
+           and a.target_runway is not None
+           and a.phase in (PHASE_APPROACH, PHASE_TAKEOFF, PHASE_DEPARTURE)]
+
+    collision = False
+    for i in range(len(low)):
+        for j in range(i + 1, len(low)):
+            a, b = low[i], low[j]
+            if a.target_runway is b.target_runway:
+                # Same runway: only dangerous if used in opposite roles.
+                if a.is_arrival != b.is_arrival:
+                    if math.hypot(a.x - b.x, a.y - b.y) < SAME_RUNWAY_CONFLICT_KM:
+                        a.warning = b.warning = True
+                        scoring.add_collision()
+                        collision = True
+                continue
+
+            inter = airport.intersection_of(a.target_runway, b.target_runway)
+            if inter is None:
+                continue
+            da = math.hypot(a.x - inter[0], a.y - inter[1])
+            db = math.hypot(b.x - inter[0], b.y - inter[1])
+            if da < CROSSING_COLLISION_KM and db < CROSSING_COLLISION_KM:
+                a.warning = b.warning = True
+                scoring.add_collision()
+                collision = True
+            elif da < CROSSING_WARNING_KM and db < CROSSING_WARNING_KM:
+                a.warning = b.warning = True
+                scoring.add_warning(a, b)
 
     return collision

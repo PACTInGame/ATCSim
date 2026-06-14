@@ -13,6 +13,26 @@ def heading_to_vector(heading_deg):
     return math.sin(rad), math.cos(rad)
 
 
+def segment_intersection(p1, p2, p3, p4):
+    """Return the intersection point of segments p1-p2 and p3-p4, or None.
+
+    Points are (x, y) tuples. Returns None when the segments are parallel or
+    do not actually cross within both spans.
+    """
+    x1, y1 = p1
+    x2, y2 = p2
+    x3, y3 = p3
+    x4, y4 = p4
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-9:
+        return None  # parallel
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+    u = ((x1 - x3) * (y1 - y2) - (y1 - y3) * (x1 - x2)) / denom
+    if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+        return (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+    return None
+
+
 class Runway:
     """A single runway with a fixed heading and threshold position."""
 
@@ -55,6 +75,17 @@ class Runway:
         return (self.threshold_x + lx * distance_km,
                 self.threshold_y + ly * distance_km)
 
+    def strip_segment(self, back_km=0.5, fwd_km=3.0):
+        """Physical runway strip as two (x, y) endpoints.
+
+        Extends slightly behind the threshold (approach side) and forward in
+        the landing direction (rollout). Used for crossing-runway geometry.
+        """
+        lx, ly = self.landing_vector()
+        p1 = (self.threshold_x - lx * back_km, self.threshold_y - ly * back_km)
+        p2 = (self.threshold_x + lx * fwd_km, self.threshold_y + ly * fwd_km)
+        return p1, p2
+
 
 class Airport:
     """An airport definition with a set of runways."""
@@ -67,6 +98,27 @@ class Airport:
         self.exit_waypoints = exit_waypoints or self._default_exits()
         self.wind_dir = wind_dir
         self.wind_speed = wind_speed
+        # Cache of crossing points between runway strips: {(name_a, name_b): pt}.
+        self._intersections = self._compute_intersections()
+
+    def _compute_intersections(self):
+        result = {}
+        for i in range(len(self.runways)):
+            for j in range(i + 1, len(self.runways)):
+                a, b = self.runways[i], self.runways[j]
+                p1, p2 = a.strip_segment()
+                p3, p4 = b.strip_segment()
+                pt = segment_intersection(p1, p2, p3, p4)
+                if pt is not None:
+                    result[(a.name, b.name)] = pt
+                    result[(b.name, a.name)] = pt
+        return result
+
+    def intersection_of(self, runway_a, runway_b):
+        """Return the crossing point of two runways, or None if they don't cross."""
+        if runway_a is None or runway_b is None or runway_a is runway_b:
+            return None
+        return self._intersections.get((runway_a.name, runway_b.name))
 
     @staticmethod
     def _default_exits():

@@ -1,6 +1,6 @@
 {
   "level_id": 8,
-  "name": "ZRH - Zurich, Switzerland (crossing runways)",
+  "name": "ZRH - Zurich, Switzerland",
   "runways": [
     {"name": "16",  "heading": 160, "size": "large", "threshold_x": 0.0,  "threshold_y": 1.5},
     {"name": "28", "heading": 280, "size": "large", "threshold_x": 1.5, "threshold_y": 0.0}

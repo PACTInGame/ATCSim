@@ -7,8 +7,7 @@ from atc.airport import heading_to_vector
 
 
 # ----- Phases ----------------------------------------------------------------
-PHASE_INBOUND = "INBOUND"          # arrival, navigating toward IAF
-PHASE_HOLDING = "HOLDING"          # circling at present position
+PHASE_INBOUND = "INBOUND"          # arrival, navigating toward IAF (may be holding)
 PHASE_APPROACH = "APPROACH"        # cleared to land, on final
 PHASE_LANDED = "LANDED"            # touched down, will despawn
 PHASE_TAKEOFF = "TAKEOFF"          # rolling on the runway
@@ -73,6 +72,7 @@ class Aircraft:
         self.waypoints = []                 # remaining nav waypoints
 
         # Player-driven flags
+        self.assigned_heading = None         # vectoring; None = own navigation
         self.cleared_to_land = False
         self.handed_off = False
         self.given_wind = False
@@ -83,6 +83,7 @@ class Aircraft:
         # Holding
         self.holding = False
         self.holding_started = False
+        self.hold_fix_altitude = None  # assigned stack altitude while holding
 
         # Take-off readiness for departures
         self.takeoff_clearance = False  # auto granted when runway is free
@@ -106,8 +107,7 @@ class Aircraft:
     # ---------------------------------------------------------------- helpers
     @property
     def is_arrival(self):
-        return self.phase in (PHASE_INBOUND, PHASE_HOLDING,
-                              PHASE_APPROACH, PHASE_LANDED)
+        return self.phase in (PHASE_INBOUND, PHASE_APPROACH, PHASE_LANDED)
 
     @property
     def is_departure(self):
@@ -187,6 +187,13 @@ class Aircraft:
         if self.holding:
             # Standard rate right turn around present position.
             self.target_heading = (self.heading + 30) % 360
+            return
+
+        # Player vectoring overrides own-navigation while airborne and en route
+        # (not during the takeoff roll or once established on final approach).
+        if self.assigned_heading is not None and self.phase in (
+                PHASE_INBOUND, PHASE_DEPARTURE):
+            self.target_heading = self.assigned_heading
             return
 
         if self.phase == PHASE_INBOUND:
@@ -288,8 +295,11 @@ class Aircraft:
     # -------------------------------------------------------- fuel emergencies
     def _update_fuel_emergency(self):
         if self.fuel_minutes <= 0 and self.phase != PHASE_LANDED:
+            # Mark as crashed but keep the aircraft active for one more frame so
+            # the manager can detect the crash before it is filtered out of the
+            # aircraft list. The manager ends the level on this flag.
+            self.fuel_minutes = 0
             self.emergency = "crashed"
-            self.phase = PHASE_DESPAWNED
             return
         if self.emergency == "minimum_fuel" and self.fuel_minutes < 4:
             # Promote to mayday: re-announce by clearing the announced flag.
@@ -315,21 +325,34 @@ class Aircraft:
     def cmd_set_speed(self, kt):
         self.target_speed = float(kt)
 
+    def cmd_set_heading(self, hdg):
+        """Vector the aircraft onto an assigned heading (manual control)."""
+        self.assigned_heading = float(hdg) % 360
+        self.holding = False
+
+    def cmd_resume_own_nav(self):
+        """Cancel vectoring; aircraft resumes routing to its IAF / exit fix."""
+        self.assigned_heading = None
+        self.holding = False
+
     def cmd_clear_to_land(self, runway):
         self.cleared_to_land = True
         self.target_runway = runway
         self.holding = False
-        if self.phase in (PHASE_HOLDING, PHASE_INBOUND):
+        self.assigned_heading = None  # intercept the centerline to the IAF
+        if self.phase == PHASE_INBOUND:
             self.phase = PHASE_INBOUND  # nav loop will switch to APPROACH
 
     def cmd_hold(self):
         self.holding = True
+        self.assigned_heading = None
 
     def cmd_resume_hold(self):
         self.holding = False
 
     def cmd_go_around(self):
         self.cleared_to_land = False
+        self.assigned_heading = None
         self.phase = PHASE_INBOUND
         self.target_altitude = max(self.target_altitude, 4000.0)
         self.target_speed = max(self.target_speed, 200.0)
